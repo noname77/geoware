@@ -3,11 +3,14 @@
 *.ko
 *.obj
 *.elf
+
+
+# Various contiki files
+*.sky
 *.map
 symbols*
-
-# Compiled Firmware
-*.sky
+obj*
+*.cooja
 
 # Precompiled Headers
 *.gch

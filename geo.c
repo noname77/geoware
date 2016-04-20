@@ -17,3 +17,7 @@ float distance(pos_t a, pos_t b) {
 
 	return sqrt(diff_x*diff_x + diff_y*diff_y);
 }
+
+int pos_cmp(pos_t a, pos_t b) {
+	return (a.x == b.x) && (a.y == b.y);
+}

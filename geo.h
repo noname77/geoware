@@ -8,5 +8,6 @@ typedef struct {
 
 void print_pos(pos_t pos);
 float distance(pos_t a, pos_t b);
+int pos_cmp(pos_t a, pos_t b);
 
 #endif

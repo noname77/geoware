@@ -40,10 +40,12 @@
 #include "contiki.h"
 #include "net/rime.h"
 #include "dev/serial-line.h"
+#include "dev/button-sensor.h"
 #include "lib/random.h"
 #include "serial-shell.h"
 
 #include <stdio.h> /* For printf() */
+#include <float.h> /* for FLT_MAX */
 
 #include "geoware.h"
 #include "helpers.h"
@@ -60,10 +62,8 @@
 #define debug_printf(format, args...)
 #endif
 
-// nodes position
+// node's position
 static pos_t own_pos;
-
-subscription_t subscriptions[MAX_ACTIVE_SUBSCRIPTIONS];
 
 /* This structure holds information about neighbors. */
 struct neighbor {
@@ -98,8 +98,19 @@ MEMB(neighbors_memb, struct neighbor, MAX_NEIGHBORS);
    have seen thus far. */
 LIST(neighbors_list);
 
+/*
+ * This function prints the neighbor list.
+ */
+static void
+print_neighbors() {
+  struct neighbor *n;
 
-
+  printf("neighbors:\n");
+  for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
+    printf("%d.%d ", n->addr.u8[0], n->addr.u8[1]);
+    print_pos(n->pos[0]);
+  }
+}
 
 /*
  * This function is called by the ctimer present in each neighbor
@@ -116,6 +127,46 @@ remove_neighbor(void *n)
   list_remove(neighbors_list, tmp);
   memb_free(&neighbors_memb, tmp);
 }
+
+/* This structure holds information about sensor readings. */
+struct reading {
+  /* The ->next pointer is needed since we are placing these
+     on a Contiki list. */
+  struct reading *next;
+
+  /* type of the reading */
+  reading_type type;
+
+  /* The ->value field (union) holds the actual reading value */
+  reading_val value;
+};
+
+/* This MEMB() definition defines a memory pool from which we allocate
+   neighbor entries. */
+MEMB(readings_memb, struct reading, MAX_READINGS);
+
+/* The readings_list is a Contiki list that holds past sensor readings. */
+LIST(readings_list);
+
+
+/* This structure holds information about sensor readings. */
+struct subscription {
+  /* The ->next pointer is needed since we are placing these
+     on a Contiki list. */
+  struct subscription *next;
+
+  /* -> sub holds the subscription information */
+  subscription_t sub;
+};
+
+/* This MEMB() definition defines a memory pool from which we allocate
+   subscription entries. */
+MEMB(subscriptions_memb, struct subscription, MAX_ACTIVE_SUBSCRIPTIONS);
+
+/* The active_subscriptions is a Contiki list that holds what it says. */
+LIST(active_subscriptions);
+
+
 
 /* This function is called whenever a broadcast message is received. */
 static void
@@ -233,7 +284,7 @@ PROCESS_THREAD(broadcast_process, ev, data)
   	broadcast_pkt.pos[0] = own_pos;
 
 	for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
-	  broadcast_pkt.pos[broadcast_pkt.hdr.len++] = n->pos[0];
+	  broadcast_pkt.pos[++broadcast_pkt.hdr.len] = n->pos[0];
 
 	  /* We break out of the loop if the max number of neigbor neighbors is
 	     reached */
@@ -258,66 +309,187 @@ PROCESS_THREAD(broadcast_process, ev, data)
 }
 
 /*---------------------------------------------------------------------------*/
-
-/* This function is called for every incoming runicast packet. */
+/*
+ * This function is called at the final recepient of the message.
+ */
 static void
-recv_runicast(struct runicast_conn *c, const rimeaddr_t *from, uint8_t seqno)
+recv(struct multihop_conn *c, const rimeaddr_t *sender,
+     const rimeaddr_t *prevhop,
+     uint8_t hops)
 {
-  debug_printf("runicast message received from %d.%d, at: %lu\n",
-       from->u8[0], from->u8[1], clock_seconds());
+  printf("multihop message received. originator: %d.%d hops: %d\n", \
+  	sender->u8[0], sender->u8[1], hops);
 }
-
-/*---------------------------------------------------------------------------*/
-
-/* callback on ACK reception */
-static void
-sent_runicast(struct runicast_conn *c, const rimeaddr_t *to, \
-	uint8_t retransmissions)
+/*
+ * This function is called to forward a packet. The function picks the
+ * neighbor closest to the destination from the neighbor list and returns
+ * its address. If no neighbor is closer than ourselfes, choose from neighbor's
+ * neighbors. The multihop layer sends the packet to this address. If no
+ * neighbor is found, the function returns NULL to signal to the multihop layer
+ * that the packet should be dropped.
+ */
+static rimeaddr_t *
+forward(struct multihop_conn *c,
+	const rimeaddr_t *originator, const rimeaddr_t *dest,
+	const rimeaddr_t *prevhop, uint8_t hops)
 {
-  debug_printf("runicast message sent to %d.%d, at: %lu, retransmissions %d\n",
-       to->u8[0], to->u8[1], clock_seconds(), retransmissions);
+  /* Find neighbor closer to the destination to forward to. */
+  struct neighbor *n;
+  struct neighbor *closest = NULL;
+	geoware_hdr_t *multihop_hdr;
+	reading_hdr_t *reading_hdr;
+	uint8_t i;
+
+	float min_dist = FLT_MAX;
+
+  /* The packetbuf_dataptr() returns a pointer to the first data byte
+     in the received packet. */
+  multihop_hdr = packetbuf_dataptr();
+  
+ //  printf("multihop r: %d, %d, %d\n", multihop_hdr->ver, \
+ //  	multihop_hdr->type, multihop_hdr->len );
+ //  printf("prevhop: %d.%d\n", prevhop->u8[0], prevhop->u8[1]);
+	// print_neighbors();
+
+  if(multihop_hdr->ver != GEOWARE_VERSION || list_length(neighbors_list) == 0) {
+  	return NULL;
+  }
+
+	if(multihop_hdr->type == GEOWARE_READING) {
+		reading_hdr = (reading_hdr_t*) multihop_hdr;
+
+  	/* Find distance to destination */
+  	min_dist = distance(own_pos, reading_hdr->owner_pos);
+  	// printf("min_dist s: "PRINTFLOAT"\n", (long)min_dist, decimals(min_dist));
+
+  	/* check if we know a closer neighbor */
+  	for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
+  		// prevent passing back and forth, turns out that prevhop == destination
+  		// for the first hop
+  		if(rimeaddr_cmp(&n->addr, prevhop) && !rimeaddr_cmp(prevhop, dest)) {
+  			continue;
+  		}
+
+    	float tmp_dist = distance(n->pos[0], reading_hdr->owner_pos);
+			
+			// printf("%d.%d: ", n->addr.u8[0], n->addr.u8[1]);
+			// print_pos(n->pos[0]);
+			// printf("tmp_dist: "PRINTFLOAT"\n", (long)tmp_dist, decimals(tmp_dist));
+    	
+    	if(tmp_dist < min_dist) {
+    		min_dist = tmp_dist;
+    		closest = n;
+    		// printf("min_dist t: "PRINTFLOAT"\n", (long)min_dist, decimals(min_dist));
+    	}
+  	}
+
+  	if(closest == NULL) {
+  		/* we didn't find a closer neighbor, check neighbor's neighbors */
+  	  for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
+	  		// prevent passing back and forth:
+	  		if(rimeaddr_cmp(&n->addr, prevhop)) {
+	  			continue;
+	  		}
+	    	for(i=1; i<=n->neighbors; i++){
+	    		// dont consider ourselves
+	    		if(pos_cmp(own_pos, n->pos[i])) {
+	    			continue;
+	    		}
+		    	float tmp_dist = distance(n->pos[i], reading_hdr->owner_pos);
+		    	
+		      // print_pos(n->pos[i]);
+					// printf("tmp_dist: "PRINTFLOAT"\n", (long)tmp_dist, decimals(tmp_dist));
+
+		    	if(tmp_dist < min_dist) {
+		    		min_dist = tmp_dist;
+		    		closest = n;
+		    	}
+		    }
+	  	}	
+  	}
+  }
+
+	if(closest != NULL) {
+	  printf("%d.%d: Forwarding packet to %d.%d (still "PRINTFLOAT" away), \
+	  	hops %d\n", rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1], \
+	     closest->addr.u8[0], closest->addr.u8[1], (long)min_dist, \
+	     decimals(min_dist), packetbuf_attr(PACKETBUF_ATTR_HOPS));
+	  return &closest->addr;
+	}
+
+  // printf("%d.%d: did not find a neighbor to foward to\n",
+	 // rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1]);
+  // return NULL;
+
+  // didnt find anyone closer, nor anyone that knows someone closer
+  // but we are in a dense network, so lets just try our luck
+  // and forward to someone different than from whom we received
+  do {
+    int num = random_rand() % list_length(neighbors_list);
+    i = 0;
+    for(n = list_head(neighbors_list); n != NULL && i != num; n = list_item_next(n)) i++;
+  }
+  while(rimeaddr_cmp(&n->addr, prevhop));
+
+  printf("%d.%d: Randomly forwarding packet to %d.%d, hops %d\n", \
+  	rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1], \
+    n->addr.u8[0], n->addr.u8[1], packetbuf_attr(PACKETBUF_ATTR_HOPS));
+  return &n->addr;
 }
-
 /*---------------------------------------------------------------------------*/
-
-/* callback on delivery timeout */
-static void
-timedout_runicast(struct runicast_conn *c, const rimeaddr_t *to, \
-	uint8_t retransmissions)
+/* Declare multihop structures */
+static const struct multihop_callbacks multihop_call = {recv, forward};
+static struct multihop_conn multihop;
+PROCESS(multihop_process, "Multihop process");
+/*---------------------------------------------------------------------------*/
+PROCESS_THREAD(multihop_process, ev, data)
 {
-  debug_printf("runicast message timed out when sending to %d.%d, \
-  	retransmissions %d\n",
-         to->u8[0], to->u8[1], retransmissions);
-
-  // TODO: remove the neighbor from list
-}
-
-/*---------------------------------------------------------------------------*/
-/* Declare runicast structures */
-static struct runicast_conn runicast;
-static const struct runicast_callbacks runicast_callbacks = { \
-	recv_runicast, sent_runicast, timedout_runicast };
-PROCESS(runicast_process, "Runicast process");
-/*---------------------------------------------------------------------------*/
-PROCESS_THREAD(runicast_process, ev, data)
-{
-  PROCESS_EXITHANDLER(runicast_close(&runicast);)
+  PROCESS_EXITHANDLER(multihop_close(&multihop);)
     
   PROCESS_BEGIN();
 
-  static struct etimer et;
-  static struct neighbor *n;
+  static reading_hdr_t reading_hdr;
+  pos_t owner_pos;
 
-  runicast_open(&runicast, RUNICAST_CHANNEL, &runicast_callbacks);
+  /* Activate the button sensor. We use the button to drive traffic -
+     when the button is pressed, a packet is sent. */
+  SENSORS_ACTIVATE(button_sensor);
 
+	/* Open a multihop connection on Rime channel MULTIHOP_CHANNEL. */
+  multihop_open(&multihop, MULTIHOP_CHANNEL, &multihop_call);
+
+
+  /* Loop forever, send a packet when the button is pressed. */
   while(1) {
-    etimer_set(&et, CLOCK_SECOND * random_rand()%3);
-    
-    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+    rimeaddr_t to;
 
-    // debug_printf("can send runicast here\n");
-    // packetbuf_copyfrom(&mv, sizeof(dtn_header) + no*sizeof(dtn_message));
-    // runicast_send(&runicast, &n->addr, MAX_RETRANSMISSIONS);
+    /* Wait until we get a sensor event with the button sensor as data. */
+    PROCESS_WAIT_EVENT_UNTIL(ev == sensors_event &&
+			     data == &button_sensor);
+
+    printf("Creating multihop packet\n");
+
+    // prepare the multihop packet
+  	reading_hdr.hdr.ver = GEOWARE_VERSION;
+  	reading_hdr.hdr.type = GEOWARE_READING;
+  	reading_hdr.hdr.len = 0;
+  	reading_hdr.owner_pos = owner_pos;
+
+    /* Copy the "Hello" to the packet buffer. */
+    packetbuf_copyfrom(&reading_hdr, sizeof(reading_hdr_t));
+
+    /* Set the Rime address of the final receiver of the packet to
+       1.0. This is a value that happens to work nicely in a Cooja
+       simulation (because the default simulation setup creates one
+       node with address 1.0). */
+    to.u8[0] = 1;
+    to.u8[1] = 0;
+
+		print_neighbors();
+
+    /* Send the packet. */
+    multihop_send(&multihop, &to);
+
   }
 
   PROCESS_END();
@@ -325,16 +497,16 @@ PROCESS_THREAD(runicast_process, ev, data)
 
 /*---------------------------------------------------------------------------*/
 
-
-
-
 uint16_t subscribe(uint8_t type, uint32_t period, \
     uint8_t aggr_type, uint8_t aggr_num) {
   return 0;
 }
 void unsubscribe(uint16_t type) {
 }
+
+// send an updated value to the subscription owner
 void publish(uint16_t sID) {
+  
 }
 
 
@@ -368,10 +540,18 @@ PROCESS_THREAD(boot_process, ev, data)
   serial_shell_init();
   // and shell commands
   commands_init();
+  /* Initialize the memory for the neighbor table entries. */
+  memb_init(&neighbors_memb);
+  /* Initialize the list used for the neighbor table. */
+  list_init(neighbors_list);
+  /* Initialize the memory for the reading entries. */
+  memb_init(&readings_memb);
+  /* Initialize the list used for the sensor readings. */
+  list_init(readings_list);
   // start broadcast process
   process_start(&broadcast_process, NULL);
   // start runicast process
-  process_start(&runicast_process, NULL);
+  process_start(&multihop_process, NULL);
 
   printf("%d.%d: Booting completed.\n", \
   	rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1]);

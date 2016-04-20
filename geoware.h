@@ -7,11 +7,22 @@
 
 #define GEOWARE_VERSION 1
 
+typedef enum { UINT8, UINT16, FLOAT } reading_type;
+
+typedef union
+{
+  uint8_t ui8;
+  uint16_t ui16;
+  float fl;
+} reading_val;
+
 enum
 {
 	GEOWARE_RESERVED = 0,
 	GEOWARE_BROADCAST,
-	GEOWARE_SID_DISCOVERY
+  GEOWARE_SUBSCRIPTION,
+	GEOWARE_SID_DISCOVERY,
+  GEOWARE_READING
 };
 
 typedef struct
@@ -25,7 +36,16 @@ typedef struct
 {
 	geoware_hdr_t hdr;
 	pos_t pos[MAX_NEIGHBOR_NEIGHBORS+1];
-} broadcast_t;
+} broadcast_pkt_t;
+
+typedef struct
+{
+  geoware_hdr_t hdr;
+  uint16_t sID;
+  pos_t owner_pos;
+} reading_hdr_t;
+
+
 
 typedef struct
 {
@@ -33,13 +53,15 @@ typedef struct
 } sid_discovery_t;
 
 typedef struct {
-  rimeaddr_t owner_addr;  // TODO: need this?
-  pos_t owner_pos;
-  uint8_t type;
   uint16_t sID;
+  pos_t owner_pos;
+  rimeaddr_t owner_addr;
+  uint8_t type;
   uint32_t period; //in units of ms
   uint8_t aggr_type;
   uint8_t aggr_num;
+  pos_t center;
+  float radius;
 } subscription_t;
 
 
