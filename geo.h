@@ -1,6 +1,8 @@
 #ifndef GEO_H
 #define GEO_H
 
+#define EPSILON 0.05
+
 typedef struct {
   float x;
   float y;

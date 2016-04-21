@@ -37,6 +37,7 @@
  *         Wiktor Grajkowski <wiktor.grajkowski.12@ucl.ac.uk>
  */
 
+/* contiki includes */
 #include "contiki.h"
 #include "net/rime.h"
 #include "dev/serial-line.h"
@@ -44,9 +45,11 @@
 #include "lib/random.h"
 #include "serial-shell.h"
 
+/* standard library includes */
 #include <stdio.h> /* For printf() */
 #include <float.h> /* for FLT_MAX */
 
+/* project includes */
 #include "geoware.h"
 #include "helpers.h"
 #include "commands.h"
@@ -64,6 +67,18 @@
 
 // node's position
 static pos_t own_pos;
+
+// processes
+PROCESS(broadcast_process, "Broadcast process");
+PROCESS(multihop_process, "Multihop process");
+PROCESS(boot_process, "Boot process");
+AUTOSTART_PROCESSES(&boot_process);
+
+// events
+process_event_t broadcast_subscription_event;
+process_event_t subscribe_event;
+
+/*---------------------------------------------------------------------------*/
 
 /* This structure holds information about neighbors. */
 struct neighbor {
@@ -128,14 +143,16 @@ remove_neighbor(void *n)
   memb_free(&neighbors_memb, tmp);
 }
 
+/*---------------------------------------------------------------------------*/
+
 /* This structure holds information about sensor readings. */
 struct reading {
   /* The ->next pointer is needed since we are placing these
      on a Contiki list. */
   struct reading *next;
 
-  /* type of the reading */
-  reading_type type;
+  /* type of the sensor / reading */
+  sensor_t type;
 
   /* The ->value field (union) holds the actual reading value */
   reading_val value;
@@ -147,7 +164,6 @@ MEMB(readings_memb, struct reading, MAX_READINGS);
 
 /* The readings_list is a Contiki list that holds past sensor readings. */
 LIST(readings_list);
-
 
 /* This structure holds information about sensor readings. */
 struct subscription {
@@ -166,15 +182,78 @@ MEMB(subscriptions_memb, struct subscription, MAX_ACTIVE_SUBSCRIPTIONS);
 /* The active_subscriptions is a Contiki list that holds what it says. */
 LIST(active_subscriptions);
 
+/* Check if we already subscribed to sID. */
+uint8_t already_subscribed(sid_t sID) {
+  struct subscription *s;
 
+  for(s = list_head(active_subscriptions); s != NULL; s = list_item_next(s)) {
+    /* We break out of the loop if the sID in quesiton matches current
+       subscription. */
+    if(sID == s->sub.subscription_hdr.sID) {
+      break;
+    }
+  }
 
+  return s != NULL;
+}
+
+subscription_t* add_subscription(subscription_t *sub) {
+  struct subscription *new_sub;
+
+  new_sub = memb_alloc(&subscriptions_memb);
+
+  /* If we could not allocate a new neighbor entry, we give up. We
+     could have reused an old neighbor entry, but we do not do this
+     for now. */
+  if(new_sub == NULL) {
+    debug_printf("Subscription list full\n");
+    return NULL;
+  }
+
+  /* Initialize the fields. */
+  new_sub->sub = *sub;
+
+  /* Place the subscription on the active_subscriptions list. */
+  list_add(active_subscriptions, new_sub);
+
+  debug_printf("subscription added: %u\n", new_sub->sub.subscription_hdr.sID);
+
+  return &new_sub->sub;
+}
+
+void process_incoming_subscription(subscription_t *subscription) {
+  // check if we are in the region of interest
+  if (distance(own_pos, subscription->center) > subscription->radius) {
+    return;
+  }
+
+  // check if we are already subscribed
+  if(!already_subscribed(subscription->subscription_hdr.sID)) {
+    // TODO: check if we support the sensor type
+
+    // add the subscription
+    subscription_t *new_sub = add_subscription(subscription);
+
+    // rebroadcast
+    // TODO: only if we havent previously requested
+    // TODO: what if we didnt have enough space to add new subscription but 
+    // would like to worward?
+    if(new_sub != NULL) {
+      process_post(&broadcast_process, broadcast_subscription_event, \
+        (void*) new_sub);
+    }
+  }
+}
+
+/*---------------------------------------------------------------------------*/
 /* This function is called whenever a broadcast message is received. */
 static void
 broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
 {
   struct neighbor *n;
   geoware_hdr_t *broadcast_hdr;
-  broadcast_t *broadcast_pkt;
+  broadcast_pkt_t *broadcast_pkt;
+  subscription_pkt_t *subscription_pkt;
   uint8_t i;
 
   /* The packetbuf_dataptr() returns a pointer to the first data byte
@@ -188,46 +267,46 @@ broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
   	return;
   }
 
-  /* Check if we already know this neighbor. */
-  for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
-    /* We break out of the loop if the address of the neighbor matches
-       the address of the neighbor from which we received this
-       broadcast message. */
-    if(rimeaddr_cmp(&n->addr, from)) {
-      break;
-    }
-  }
-
-  /* If n is NULL, this neighbor was not found in our list, and we
-     allocate a new struct neighbor from the neighbors_memb memory
-     pool. */
-  if(n == NULL) {
-    n = memb_alloc(&neighbors_memb);
-
-    /* If we could not allocate a new neighbor entry, we give up. We
-       could have reused an old neighbor entry, but we do not do this
-       for now. */
-    if(n == NULL) {
-      return;
-    }
-
-    /* Initialize the fields. */
-    rimeaddr_copy(&n->addr, from);
-
-    /* Place the neighbor on the neighbor list. */
-    list_add(neighbors_list, n);
-  }
-
-  /* update the broadcast timestamp */
-  n->timestamp = clock_seconds();
-
-  /* update the expiration timer */
-  ctimer_set(&n->ctimer, NEIGHBOR_TIMEOUT * CLOCK_SECOND, remove_neighbor, n);
-
-  if(broadcast_hdr->type == GEOWARE_BROADCAST) {
+  if(broadcast_hdr->type == GEOWARE_BROADCAST_LOC) {
   	// we know a broadcast packet was received so cast to it to use the fields
-  	broadcast_pkt = (broadcast_t*) broadcast_hdr;
+  	broadcast_pkt = (broadcast_pkt_t*) broadcast_hdr;
   	
+    /* Check if we already know this neighbor. */
+    for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
+      /* We break out of the loop if the address of the neighbor matches
+         the address of the neighbor from which we received this
+         broadcast message. */
+      if(rimeaddr_cmp(&n->addr, from)) {
+        break;
+      }
+    }
+
+    /* If n is NULL, this neighbor was not found in our list, and we
+       allocate a new struct neighbor from the neighbors_memb memory
+       pool. */
+    if(n == NULL) {
+      n = memb_alloc(&neighbors_memb);
+
+      /* If we could not allocate a new neighbor entry, we give up. We
+         could have reused an old neighbor entry, but we do not do this
+         for now. */
+      if(n == NULL) {
+        return;
+      }
+
+      /* Initialize the fields. */
+      rimeaddr_copy(&n->addr, from);
+
+      /* Place the neighbor on the neighbor list. */
+      list_add(neighbors_list, n);
+    }
+
+    /* update the broadcast timestamp */
+    n->timestamp = clock_seconds();
+
+    /* update the expiration timer */
+    ctimer_set(&n->ctimer, NEIGHBOR_TIMEOUT * CLOCK_SECOND, remove_neighbor, n);
+
   	// set number of neighbor's neighbors positions that we received
   	n->neighbors = broadcast_hdr->len;
 
@@ -244,6 +323,12 @@ broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
   	debug_printf("updated neighbor: %d.%d, ", n->addr.u8[0], n->addr.u8[1]);
   	print_pos(n->pos[0]);
   }
+
+  else if (broadcast_hdr->type == GEOWARE_BROADCAST_SUB) {
+    subscription_pkt = (subscription_pkt_t*) broadcast_hdr;
+
+    process_incoming_subscription(&subscription_pkt->subscription);
+  }
 }
 /*---------------------------------------------------------------------------*/
 /* Declare the broadcast  structures */
@@ -253,7 +338,6 @@ static struct broadcast_conn broadcast;
    is received. We pass a pointer to this structure in the
    broadcast_open() call below. */
 static const struct broadcast_callbacks broadcast_call = {broadcast_recv};
-PROCESS(broadcast_process, "Broadcast process");
 /*---------------------------------------------------------------------------*/
 PROCESS_THREAD(broadcast_process, ev, data)
 {
@@ -262,47 +346,72 @@ PROCESS_THREAD(broadcast_process, ev, data)
   PROCESS_BEGIN();
 
   static struct etimer et;
-  static broadcast_t broadcast_pkt;
+  static broadcast_pkt_t broadcast_pkt;
+  static subscription_pkt_t subscription_pkt;
   struct neighbor *n;
   uint8_t i;
 
+  broadcast_subscription_event = process_alloc_event();
+
   broadcast_open(&broadcast, BROADCAST_CHANNEL, &broadcast_call);
 
+  /* Send a broadcast every BROADCAST_PERIOD with a jitter of half of 
+     BROADCAST_PERIOD */
+  etimer_set(&et, \
+    CLOCK_SECOND * \
+    (BROADCAST_PERIOD/2 + random_rand()%(BROADCAST_PERIOD+1)));
+
   while(1) {
-    /* Send a broadcast every BROADCAST_PERIOD with a jitter of half of 
-       BROADCAST_PERIOD */
-    etimer_set(&et, \
-    	CLOCK_SECOND * \
-    	(BROADCAST_PERIOD/2 + random_rand()%(BROADCAST_PERIOD+1)));
 
-    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+    PROCESS_WAIT_EVENT();
 
-    // prepare the broadcast packet
-  	broadcast_pkt.hdr.ver = GEOWARE_VERSION;
-  	broadcast_pkt.hdr.type = GEOWARE_BROADCAST;
-  	broadcast_pkt.hdr.len = 0;	// number of neighbors
-  	broadcast_pkt.pos[0] = own_pos;
+    if(etimer_expired(&et)) {
+      // prepare the broadcast packet
+      broadcast_pkt.hdr.ver = GEOWARE_VERSION;
+      broadcast_pkt.hdr.type = GEOWARE_BROADCAST_LOC;
+      broadcast_pkt.hdr.len = 0;  // number of neighbors
+      broadcast_pkt.pos[0] = own_pos;
 
-	for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
-	  broadcast_pkt.pos[++broadcast_pkt.hdr.len] = n->pos[0];
+      // fill in the neighbors positions
+      for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
+        broadcast_pkt.pos[++broadcast_pkt.hdr.len] = n->pos[0];
 
-	  /* We break out of the loop if the max number of neigbor neighbors is
-	     reached */
-	  if(broadcast_pkt.hdr.len == MAX_NEIGHBOR_NEIGHBORS) {
-	    break;
-	  }
-	}
+        /* We break out of the loop if the max number of neigbor neighbors is
+           reached */
+        if(broadcast_pkt.hdr.len == MAX_NEIGHBOR_NEIGHBORS) {
+          break;
+        }
+      }
 
-  	printf("bcast s: %d, %d, %d\n", broadcast_pkt.hdr.ver, \
-  		broadcast_pkt.hdr.type, broadcast_pkt.hdr.len );
+      debug_printf("bcast s: %d, %d, %d\n", broadcast_pkt.hdr.ver, \
+        broadcast_pkt.hdr.type, broadcast_pkt.hdr.len );
 
-    packetbuf_copyfrom(&broadcast_pkt, \
-    	sizeof(geoware_hdr_t)+(1+broadcast_pkt.hdr.len)*sizeof(pos_t));
+      /* log the time of the broadcast */
+      debug_printf("[BC] @%lu\n", clock_seconds());
 
-    /* log the time of the broadcast */
-    printf("[BC] @%lu\n", clock_seconds());
+      packetbuf_copyfrom(&broadcast_pkt, \
+        sizeof(geoware_hdr_t)+(1+broadcast_pkt.hdr.len)*sizeof(pos_t));
 
-    broadcast_send(&broadcast);
+      broadcast_send(&broadcast);
+
+      /* need to set it again here, couldnt think of a better solution.. */
+      etimer_set(&et, \
+        CLOCK_SECOND * \
+        (BROADCAST_PERIOD/2 + random_rand()%(BROADCAST_PERIOD+1)));
+    }
+
+    if (ev == broadcast_subscription_event) {
+      debug_printf("broadcasting subscription\n");
+      subscription_pkt.hdr.ver = GEOWARE_VERSION;
+      subscription_pkt.hdr.type = GEOWARE_BROADCAST_SUB;
+      subscription_pkt.hdr.len = 0;
+      subscription_pkt.subscription = *(subscription_t*) data;
+
+      /* Copy the subscription to the packet buffer. */
+      packetbuf_copyfrom(&subscription_pkt, sizeof(subscription_pkt_t));
+
+      broadcast_send(&broadcast);
+    }
   }
 
   PROCESS_END();
@@ -317,8 +426,22 @@ recv(struct multihop_conn *c, const rimeaddr_t *sender,
      const rimeaddr_t *prevhop,
      uint8_t hops)
 {
+  geoware_hdr_t *multihop_hdr;
+  subscription_pkt_t *subscription_pkt;
+
   printf("multihop message received. originator: %d.%d hops: %d\n", \
   	sender->u8[0], sender->u8[1], hops);
+
+  multihop_hdr = packetbuf_dataptr();
+
+  if(multihop_hdr->ver != GEOWARE_VERSION) {
+    return NULL;
+  }
+
+  if (multihop_hdr->type == GEOWARE_SUBSCRIPTION) {
+    subscription_pkt = (subscription_pkt_t*) multihop_hdr;
+    process_incoming_subscription(&subscription_pkt->subscription);
+  }
 }
 /*
  * This function is called to forward a packet. The function picks the
@@ -338,6 +461,9 @@ forward(struct multihop_conn *c,
   struct neighbor *closest = NULL;
 	geoware_hdr_t *multihop_hdr;
 	reading_hdr_t *reading_hdr;
+  subscription_pkt_t *subscription_pkt;
+  pos_t *destination;
+  float proximity = EPSILON;
 	uint8_t i;
 
 	float min_dist = FLT_MAX;
@@ -351,63 +477,78 @@ forward(struct multihop_conn *c,
  //  printf("prevhop: %d.%d\n", prevhop->u8[0], prevhop->u8[1]);
 	// print_neighbors();
 
-  if(multihop_hdr->ver != GEOWARE_VERSION || list_length(neighbors_list) == 0) {
+  if(multihop_hdr->ver != GEOWARE_VERSION || list_length(neighbors_list)==0) {
   	return NULL;
   }
 
 	if(multihop_hdr->type == GEOWARE_READING) {
 		reading_hdr = (reading_hdr_t*) multihop_hdr;
+    destination = &reading_hdr->subscription_hdr.owner_pos;
+  }
+  else if (multihop_hdr->type == GEOWARE_SUBSCRIPTION) {
+    subscription_pkt = (subscription_pkt_t*) multihop_hdr;
+    destination = &subscription_pkt->subscription.center;
+    proximity = subscription_pkt->subscription.radius;
+  }
 
-  	/* Find distance to destination */
-  	min_dist = distance(own_pos, reading_hdr->owner_pos);
-  	// printf("min_dist s: "PRINTFLOAT"\n", (long)min_dist, decimals(min_dist));
+	/* Find distance to destination */
+	min_dist = distance(own_pos, *destination);
+	// printf("min_dist s: "PRINTFLOAT"\n", (long)min_dist, decimals(min_dist));
 
-  	/* check if we know a closer neighbor */
-  	for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
-  		// prevent passing back and forth, turns out that prevhop == destination
-  		// for the first hop
-  		if(rimeaddr_cmp(&n->addr, prevhop) && !rimeaddr_cmp(prevhop, dest)) {
+	/* check if we know a closer neighbor */
+	for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
+		// prevent passing back and forth, turns out that prevhop == 1.0
+		// for the first hop, also hops is undefined..
+		if(rimeaddr_cmp(&n->addr, prevhop) && \
+        (packetbuf_attr(PACKETBUF_ATTR_HOPS) != 1)) {
+			continue;
+		}
+
+  	float tmp_dist = distance(n->pos[0], *destination);
+		
+		// printf("%d.%d: ", n->addr.u8[0], n->addr.u8[1]);
+		// print_pos(n->pos[0]);
+		// printf("tmp_dist: "PRINTFLOAT"\n", (long)tmp_dist, decimals(tmp_dist));
+  	
+    // if the distance is less than some small value EPSILON it means we
+    // found the destination/subscription owner, set it as packet destination
+    if(tmp_dist < proximity) {
+      packetbuf_set_addr(PACKETBUF_ADDR_ERECEIVER, &n->addr);
+      closest = n;
+      break;
+    }
+
+  	if(tmp_dist < min_dist) {
+  		min_dist = tmp_dist;
+  		closest = n;
+  		// printf("min_dist t: "PRINTFLOAT"\n", (long)min_dist, decimals(min_dist));
+  	}
+	}
+
+	if(closest == NULL) {
+		/* we didn't find a closer neighbor, check neighbor's neighbors */
+	  for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
+  		// prevent passing back and forth:
+  		if(rimeaddr_cmp(&n->addr, prevhop)) {
   			continue;
   		}
+    	for(i=1; i<=n->neighbors; i++){
+    		// dont consider ourselves
+    		if(pos_cmp(own_pos, n->pos[i])) {
+    			continue;
+    		}
+	    	float tmp_dist = distance(n->pos[i], *destination);
+	    	
+	      // print_pos(n->pos[i]);
+				// printf("tmp_dist: "PRINTFLOAT"\n", (long)tmp_dist, decimals(tmp_dist));
 
-    	float tmp_dist = distance(n->pos[0], reading_hdr->owner_pos);
-			
-			// printf("%d.%d: ", n->addr.u8[0], n->addr.u8[1]);
-			// print_pos(n->pos[0]);
-			// printf("tmp_dist: "PRINTFLOAT"\n", (long)tmp_dist, decimals(tmp_dist));
-    	
-    	if(tmp_dist < min_dist) {
-    		min_dist = tmp_dist;
-    		closest = n;
-    		// printf("min_dist t: "PRINTFLOAT"\n", (long)min_dist, decimals(min_dist));
-    	}
-  	}
-
-  	if(closest == NULL) {
-  		/* we didn't find a closer neighbor, check neighbor's neighbors */
-  	  for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
-	  		// prevent passing back and forth:
-	  		if(rimeaddr_cmp(&n->addr, prevhop)) {
-	  			continue;
-	  		}
-	    	for(i=1; i<=n->neighbors; i++){
-	    		// dont consider ourselves
-	    		if(pos_cmp(own_pos, n->pos[i])) {
-	    			continue;
-	    		}
-		    	float tmp_dist = distance(n->pos[i], reading_hdr->owner_pos);
-		    	
-		      // print_pos(n->pos[i]);
-					// printf("tmp_dist: "PRINTFLOAT"\n", (long)tmp_dist, decimals(tmp_dist));
-
-		    	if(tmp_dist < min_dist) {
-		    		min_dist = tmp_dist;
-		    		closest = n;
-		    	}
-		    }
-	  	}	
-  	}
-  }
+	    	if(tmp_dist < min_dist) {
+	    		min_dist = tmp_dist;
+	    		closest = n;
+	    	}
+	    }
+  	}	
+	}
 
 	if(closest != NULL) {
 	  printf("%d.%d: Forwarding packet to %d.%d (still "PRINTFLOAT" away), \
@@ -427,7 +568,8 @@ forward(struct multihop_conn *c,
   do {
     int num = random_rand() % list_length(neighbors_list);
     i = 0;
-    for(n = list_head(neighbors_list); n != NULL && i != num; n = list_item_next(n)) i++;
+    for(n = list_head(neighbors_list); n != NULL && i != num; \
+      n = list_item_next(n)) i++;
   }
   while(rimeaddr_cmp(&n->addr, prevhop));
 
@@ -440,7 +582,6 @@ forward(struct multihop_conn *c,
 /* Declare multihop structures */
 static const struct multihop_callbacks multihop_call = {recv, forward};
 static struct multihop_conn multihop;
-PROCESS(multihop_process, "Multihop process");
 /*---------------------------------------------------------------------------*/
 PROCESS_THREAD(multihop_process, ev, data)
 {
@@ -449,7 +590,11 @@ PROCESS_THREAD(multihop_process, ev, data)
   PROCESS_BEGIN();
 
   static reading_hdr_t reading_hdr;
-  pos_t owner_pos;
+  static subscription_pkt_t subscription_pkt;
+  pos_t owner_pos = {0.0, 0.0};
+  static rimeaddr_t to;
+
+  subscribe_event = process_alloc_event();
 
   /* Activate the button sensor. We use the button to drive traffic -
      when the button is pressed, a packet is sent. */
@@ -458,38 +603,48 @@ PROCESS_THREAD(multihop_process, ev, data)
 	/* Open a multihop connection on Rime channel MULTIHOP_CHANNEL. */
   multihop_open(&multihop, MULTIHOP_CHANNEL, &multihop_call);
 
+  /* Set the Rime address of the final receiver of the packet to
+     255.255 as we rely on the x,y coordinates to deliver the packet.
+     once the recipient (distance to node is less then EPSILON)
+     the address of the destination is updated. */
+  to.u8[0] = 255;
+  to.u8[1] = 255;
 
   /* Loop forever, send a packet when the button is pressed. */
   while(1) {
-    rimeaddr_t to;
+    
 
     /* Wait until we get a sensor event with the button sensor as data. */
-    PROCESS_WAIT_EVENT_UNTIL(ev == sensors_event &&
-			     data == &button_sensor);
+    PROCESS_WAIT_EVENT();
+    if (ev == sensors_event && data == &button_sensor) {
+      printf("Creating multihop packet\n");
 
-    printf("Creating multihop packet\n");
+      // prepare the multihop packet
+    	reading_hdr.hdr.ver = GEOWARE_VERSION;
+    	reading_hdr.hdr.type = GEOWARE_READING;
+    	reading_hdr.hdr.len = 0;
+    	reading_hdr.subscription_hdr.owner_pos = owner_pos;
 
-    // prepare the multihop packet
-  	reading_hdr.hdr.ver = GEOWARE_VERSION;
-  	reading_hdr.hdr.type = GEOWARE_READING;
-  	reading_hdr.hdr.len = 0;
-  	reading_hdr.owner_pos = owner_pos;
+      /* Copy the reading to the packet buffer. */
+      packetbuf_copyfrom(&reading_hdr, sizeof(reading_hdr_t));
 
-    /* Copy the "Hello" to the packet buffer. */
-    packetbuf_copyfrom(&reading_hdr, sizeof(reading_hdr_t));
+  		print_neighbors();
 
-    /* Set the Rime address of the final receiver of the packet to
-       1.0. This is a value that happens to work nicely in a Cooja
-       simulation (because the default simulation setup creates one
-       node with address 1.0). */
-    to.u8[0] = 1;
-    to.u8[1] = 0;
+      /* Send the packet. */
+      multihop_send(&multihop, &to);
+    }
+    else if (ev == subscribe_event) {
+      subscription_pkt.hdr.ver = GEOWARE_VERSION;
+      subscription_pkt.hdr.type = GEOWARE_SUBSCRIPTION;
+      subscription_pkt.hdr.len = 0;
+      subscription_pkt.subscription = *(subscription_t*) data;
 
-		print_neighbors();
+      /* Copy the subscription to the packet buffer. */
+      packetbuf_copyfrom(&subscription_pkt, sizeof(subscription_pkt_t));
 
-    /* Send the packet. */
-    multihop_send(&multihop, &to);
-
+      /* Send the packet. */
+      multihop_send(&multihop, &to);
+    }
   }
 
   PROCESS_END();
@@ -497,9 +652,25 @@ PROCESS_THREAD(multihop_process, ev, data)
 
 /*---------------------------------------------------------------------------*/
 
-uint16_t subscribe(uint8_t type, uint32_t period, \
-    uint8_t aggr_type, uint8_t aggr_num) {
-  return 0;
+uint16_t subscribe(sensor_t type, uint32_t period, \
+    uint8_t aggr_type, uint8_t aggr_num, pos_t center, \
+    float radius) {
+
+  // create and fill the subscription structure
+  static subscription_t new_sub;
+  new_sub.subscription_hdr.sID = random_rand() % UINT16_MAX;
+  new_sub.subscription_hdr.owner_pos = own_pos;
+  new_sub.type = type;
+  new_sub.period = period;
+  new_sub.aggr_type = aggr_type;
+  new_sub.aggr_num = aggr_num;
+  new_sub.center = center;
+  new_sub.radius = radius;
+
+  // send out the news
+  process_post(&multihop_process, subscribe_event, (void*) &new_sub);
+
+  return new_sub.subscription_hdr.sID;
 }
 void unsubscribe(uint16_t type) {
 }
@@ -510,9 +681,7 @@ void publish(uint16_t sID) {
 }
 
 
-/*---------------------------------------------------------------------------*/
-PROCESS(boot_process, "Boot process");
-AUTOSTART_PROCESSES(&boot_process);
+
 /*---------------------------------------------------------------------------*/
 PROCESS_THREAD(boot_process, ev, data)
 {
@@ -533,7 +702,7 @@ PROCESS_THREAD(boot_process, ev, data)
   float d = distance(own_pos, origin);
   printf("Distance from origin: "PRINTFLOAT"\n", (long)d, decimals(d));
   printf("size of subscription: %d\n", sizeof(subscription_t));
-  printf("size of broadcast_t: %d\n", sizeof(broadcast_t));
+  printf("size of broadcast_pkt_t: %d\n", sizeof(broadcast_pkt_t));
   
 
   // init shell

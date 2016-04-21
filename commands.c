@@ -3,8 +3,10 @@
 #include "dev/cc2420.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "commands.h"
+#include "geoware.h"
 
 PROCESS(radio_power_process, "Change radio tx power");
 SHELL_COMMAND(radio_power_command, "txp", "txp: change transmit power", &radio_power_process);
@@ -26,6 +28,25 @@ PROCESS_BEGIN();
 PROCESS_END();
 }
 
+PROCESS(subscribe_process, "Subscribe process");
+SHELL_COMMAND(subscribe_command, "sub", "sub: subscribe to a sensor reading", &subscribe_process);
+/* --------------------------------- */
+PROCESS_THREAD(subscribe_process, ev, data) {
+PROCESS_BEGIN();
+  static char shell_out[6];
+  sid_t id;
+
+  pos_t center = {20.0, 20.0};
+  float radius = 11;
+
+  id = subscribe(HUMIDITY, 1000, 0, 0, center, radius);
+
+  snprintf(shell_out, sizeof(shell_out), "%u", id);
+
+  shell_output_str(&radio_power_command, "subscribed, id: ", shell_out);
+PROCESS_END();
+}
+
 void
 commands_init()
 {
@@ -34,4 +55,5 @@ commands_init()
   
   // own commands
   shell_register_command(&radio_power_command);
+  shell_register_command(&subscribe_command);
 }
