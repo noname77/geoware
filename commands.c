@@ -47,6 +47,24 @@ PROCESS_BEGIN();
 PROCESS_END();
 }
 
+PROCESS(unsubscribe_process, "Unubscribe process");
+SHELL_COMMAND(unsubscribe_command, "usub", "usub: unsubscribe from a sensor reading", &unsubscribe_process);
+/* --------------------------------- */
+PROCESS_THREAD(unsubscribe_process, ev, data) {
+PROCESS_BEGIN();
+  static char shell_out[6];
+  sid_t id;
+
+  id = atoi((char*) data);
+
+  unsubscribe(id);
+
+  snprintf(shell_out, sizeof(shell_out), "%u", id);
+
+  shell_output_str(&radio_power_command, "unsubscribed, id: ", shell_out);
+PROCESS_END();
+}
+
 void
 commands_init()
 {
@@ -56,4 +74,5 @@ commands_init()
   // own commands
   shell_register_command(&radio_power_command);
   shell_register_command(&subscribe_command);
+  shell_register_command(&unsubscribe_command);
 }

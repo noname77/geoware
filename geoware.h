@@ -22,6 +22,7 @@ enum {
 	GEOWARE_BROADCAST_LOC,
   GEOWARE_BROADCAST_SUB,
   GEOWARE_SUBSCRIPTION,
+  GEOWARE_UNSUBSCRIPTION,
 	GEOWARE_SID_DISCOVERY,
   GEOWARE_READING
 };
@@ -61,6 +62,14 @@ typedef struct {
 
 typedef struct {
   geoware_hdr_t hdr;
+  sid_t sID;
+  sensor_t type; // in case two subscriptions end up with the same sID
+  pos_t center;
+  float radius;
+} unsubscription_pkt_t;
+
+typedef struct {
+  geoware_hdr_t hdr;
   subscription_hdr_t subscription_hdr;
 } reading_hdr_t;
 
@@ -82,7 +91,7 @@ typedef union {
 sid_t subscribe(sensor_t type, uint32_t period, \
     uint8_t aggr_type, uint8_t aggr_num, pos_t center, \
     float radius);
-void unsubscribe(sid_t type);
+void unsubscribe(sid_t sID);
 void publish(sid_t sID);
 
 #endif

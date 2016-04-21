@@ -77,6 +77,7 @@ AUTOSTART_PROCESSES(&boot_process);
 // events
 process_event_t broadcast_subscription_event;
 process_event_t subscribe_event;
+process_event_t unsubscribe_event;
 
 /*---------------------------------------------------------------------------*/
 
@@ -183,7 +184,8 @@ MEMB(subscriptions_memb, struct subscription, MAX_ACTIVE_SUBSCRIPTIONS);
 LIST(active_subscriptions);
 
 /* Check if we already subscribed to sID. */
-uint8_t already_subscribed(sid_t sID) {
+uint8_t
+already_subscribed(sid_t sID) {
   struct subscription *s;
 
   for(s = list_head(active_subscriptions); s != NULL; s = list_item_next(s)) {
@@ -197,7 +199,8 @@ uint8_t already_subscribed(sid_t sID) {
   return s != NULL;
 }
 
-subscription_t* add_subscription(subscription_t *sub) {
+subscription_t*
+add_subscription(subscription_t *sub) {
   struct subscription *new_sub;
 
   new_sub = memb_alloc(&subscriptions_memb);
@@ -219,6 +222,39 @@ subscription_t* add_subscription(subscription_t *sub) {
   debug_printf("subscription added: %u\n", new_sub->sub.subscription_hdr.sID);
 
   return &new_sub->sub;
+}
+
+subscription_t*
+get_subscription(sid_t sID) {
+  struct subscription *s;
+  for(s = list_head(active_subscriptions); s != NULL; s = list_item_next(s)) {
+    /* We break out of the loop if the sID in quesiton matches current
+       subscription. */
+    if(sID == s->sub.subscription_hdr.sID) {
+      return &s->sub;
+    }
+  }
+
+  return NULL;
+}
+
+static void
+remove_subscription(sid_t sID)
+{
+  struct subscription *s;
+
+  for(s = list_head(active_subscriptions); s != NULL; s = list_item_next(s)) {
+    /* We break out of the loop if the sID in quesiton matches current
+       subscription. */
+    if(sID == s->sub.subscription_hdr.sID) {
+      break;
+    }
+  }
+
+  printf("removing subscription %u\n", sID);
+
+  list_remove(active_subscriptions, s);
+  memb_free(&subscriptions_memb, s);
 }
 
 void process_incoming_subscription(subscription_t *subscription) {
@@ -401,6 +437,7 @@ PROCESS_THREAD(broadcast_process, ev, data)
     }
 
     if (ev == broadcast_subscription_event) {
+      // TODO: add jitter
       debug_printf("broadcasting subscription\n");
       subscription_pkt.hdr.ver = GEOWARE_VERSION;
       subscription_pkt.hdr.type = GEOWARE_BROADCAST_SUB;
@@ -428,6 +465,7 @@ recv(struct multihop_conn *c, const rimeaddr_t *sender,
 {
   geoware_hdr_t *multihop_hdr;
   subscription_pkt_t *subscription_pkt;
+  unsubscription_pkt_t *unsubscription_pkt;
 
   printf("multihop message received. originator: %d.%d hops: %d\n", \
   	sender->u8[0], sender->u8[1], hops);
@@ -435,12 +473,20 @@ recv(struct multihop_conn *c, const rimeaddr_t *sender,
   multihop_hdr = packetbuf_dataptr();
 
   if(multihop_hdr->ver != GEOWARE_VERSION) {
-    return NULL;
+    return;
   }
 
   if (multihop_hdr->type == GEOWARE_SUBSCRIPTION) {
     subscription_pkt = (subscription_pkt_t*) multihop_hdr;
     process_incoming_subscription(&subscription_pkt->subscription);
+  }
+  else if (multihop_hdr->type == GEOWARE_UNSUBSCRIPTION) {
+    unsubscription_pkt = (unsubscription_pkt_t*) multihop_hdr;
+    
+    debug_printf("unsubscription packet received.\n");
+
+    // TODO: add procesing unsubscription
+    // process_incoming_unsubscription(subscription_pkt);
   }
 }
 /*
@@ -462,6 +508,7 @@ forward(struct multihop_conn *c,
 	geoware_hdr_t *multihop_hdr;
 	reading_hdr_t *reading_hdr;
   subscription_pkt_t *subscription_pkt;
+  unsubscription_pkt_t *unsubscription_pkt;
   pos_t *destination;
   float proximity = EPSILON;
 	uint8_t i;
@@ -477,7 +524,12 @@ forward(struct multihop_conn *c,
  //  printf("prevhop: %d.%d\n", prevhop->u8[0], prevhop->u8[1]);
 	// print_neighbors();
 
-  if(multihop_hdr->ver != GEOWARE_VERSION || list_length(neighbors_list)==0) {
+  debug_printf("%d.%d: dest - %d.%d\n", \
+    rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1], \
+    dest->u8[0], dest->u8[1]);
+
+  if(multihop_hdr->ver != GEOWARE_VERSION || list_length(neighbors_list)==0 \
+      || rimeaddr_cmp(&rimeaddr_node_addr, dest)) {
   	return NULL;
   }
 
@@ -489,6 +541,11 @@ forward(struct multihop_conn *c,
     subscription_pkt = (subscription_pkt_t*) multihop_hdr;
     destination = &subscription_pkt->subscription.center;
     proximity = subscription_pkt->subscription.radius;
+  }
+  else if (multihop_hdr->type == GEOWARE_UNSUBSCRIPTION) {
+    unsubscription_pkt = (unsubscription_pkt_t*) multihop_hdr;
+    destination = &unsubscription_pkt->center;
+    proximity = unsubscription_pkt->radius;
   }
 
 	/* Find distance to destination */
@@ -513,7 +570,12 @@ forward(struct multihop_conn *c,
     // if the distance is less than some small value EPSILON it means we
     // found the destination/subscription owner, set it as packet destination
     if(tmp_dist < proximity) {
+      rimeaddr_t ad;
+      rimeaddr_copy(&ad, packetbuf_addr(PACKETBUF_ADDR_ERECEIVER));
+      debug_printf("recipient  b4: %d.%d\n", ad.u8[0], ad.u8[1]);
       packetbuf_set_addr(PACKETBUF_ADDR_ERECEIVER, &n->addr);
+      rimeaddr_copy(&ad, packetbuf_addr(PACKETBUF_ADDR_ERECEIVER));
+      debug_printf("recipient aft: %d.%d\n", ad.u8[0], ad.u8[1]);
       closest = n;
       break;
     }
@@ -591,10 +653,12 @@ PROCESS_THREAD(multihop_process, ev, data)
 
   static reading_hdr_t reading_hdr;
   static subscription_pkt_t subscription_pkt;
+  static unsubscription_pkt_t unsubscription_pkt;
   pos_t owner_pos = {0.0, 0.0};
   static rimeaddr_t to;
 
   subscribe_event = process_alloc_event();
+  unsubscribe_event = process_alloc_event();
 
   /* Activate the button sensor. We use the button to drive traffic -
      when the button is pressed, a packet is sent. */
@@ -607,13 +671,11 @@ PROCESS_THREAD(multihop_process, ev, data)
      255.255 as we rely on the x,y coordinates to deliver the packet.
      once the recipient (distance to node is less then EPSILON)
      the address of the destination is updated. */
-  to.u8[0] = 255;
-  to.u8[1] = 255;
+  to.u8[0] = 254;
+  to.u8[1] = 254;
 
   /* Loop forever, send a packet when the button is pressed. */
   while(1) {
-    
-
     /* Wait until we get a sensor event with the button sensor as data. */
     PROCESS_WAIT_EVENT();
     if (ev == sensors_event && data == &button_sensor) {
@@ -630,7 +692,7 @@ PROCESS_THREAD(multihop_process, ev, data)
 
   		print_neighbors();
 
-      /* Send the packet. */
+      /* Send the packet. */ 
       multihop_send(&multihop, &to);
     }
     else if (ev == subscribe_event) {
@@ -642,7 +704,27 @@ PROCESS_THREAD(multihop_process, ev, data)
       /* Copy the subscription to the packet buffer. */
       packetbuf_copyfrom(&subscription_pkt, sizeof(subscription_pkt_t));
 
-      /* Send the packet. */
+      /* Send the packet. */ 
+      multihop_send(&multihop, &to);
+    }
+    else if (ev == unsubscribe_event) {
+      subscription_t* sub = (subscription_t*) data;
+
+      unsubscription_pkt.hdr.ver = GEOWARE_VERSION;
+      unsubscription_pkt.hdr.type = GEOWARE_UNSUBSCRIPTION;
+      unsubscription_pkt.hdr.len = 0;
+      unsubscription_pkt.sID = sub->subscription_hdr.sID;
+      unsubscription_pkt.type = sub->type;
+      unsubscription_pkt.center = sub->center;
+      unsubscription_pkt.radius = sub->radius;
+
+      /* Remove the subscription */
+      remove_subscription(unsubscription_pkt.sID);
+
+      /* Copy the unsubscription packet to the packet buffer. */
+      packetbuf_copyfrom(&unsubscription_pkt, sizeof(unsubscription_pkt_t));
+
+      /* Send the packet. */ 
       multihop_send(&multihop, &to);
     }
   }
@@ -656,9 +738,10 @@ uint16_t subscribe(sensor_t type, uint32_t period, \
     uint8_t aggr_type, uint8_t aggr_num, pos_t center, \
     float radius) {
 
+  subscription_t* active_sub;
   // create and fill the subscription structure
-  static subscription_t new_sub;
-  new_sub.subscription_hdr.sID = random_rand() % UINT16_MAX;
+  subscription_t new_sub;
+  new_sub.subscription_hdr.sID = 1 + random_rand() % UINT16_MAX;
   new_sub.subscription_hdr.owner_pos = own_pos;
   new_sub.type = type;
   new_sub.period = period;
@@ -667,17 +750,27 @@ uint16_t subscribe(sensor_t type, uint32_t period, \
   new_sub.center = center;
   new_sub.radius = radius;
 
-  // send out the news
-  process_post(&multihop_process, subscribe_event, (void*) &new_sub);
+  // TODO: add to the active subscriptions list
+  if ((active_sub = add_subscription(&new_sub)) != NULL) {
 
-  return new_sub.subscription_hdr.sID;
+    // send out the news
+    process_post(&multihop_process, subscribe_event, (void*) active_sub);
+
+    return active_sub->subscription_hdr.sID;
+  }
+  else {
+    return 0;
+  }
 }
-void unsubscribe(uint16_t type) {
+void unsubscribe(sid_t sID) {
+  process_post(&multihop_process, unsubscribe_event, (void*) get_subscription(sID));
+  // removal from active subscriptions is handled in the multihop process since
+  // it cant be done until the subsctiption info is copied to the packet
 }
 
 // send an updated value to the subscription owner
 void publish(uint16_t sID) {
-  
+
 }
 
 
