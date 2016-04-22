@@ -65,6 +65,15 @@ PROCESS_BEGIN();
 PROCESS_END();
 }
 
+PROCESS(print_neigh_process, "Print neighbors process");
+SHELL_COMMAND(print_neigh_command, "pn", "pn: print neighbors", &print_neigh_process);
+/* --------------------------------- */
+PROCESS_THREAD(print_neigh_process, ev, data) {
+PROCESS_BEGIN();
+  print_neighbors();
+PROCESS_END();
+}
+
 void
 commands_init()
 {
@@ -75,4 +84,5 @@ commands_init()
   shell_register_command(&radio_power_command);
   shell_register_command(&subscribe_command);
   shell_register_command(&unsubscribe_command);
+  shell_register_command(&print_neigh_command);
 }

@@ -46,15 +46,15 @@
 #include "serial-shell.h"
 
 /* standard library includes */
-#include <stdio.h> /* For printf() */
-#include <float.h> /* for FLT_MAX */
+#include <stdio.h>  /* For printf() */
+#include <string.h> /* For memcpy */
+#include <float.h>  /* for FLT_MAX */
 
 /* project includes */
 #include "geoware.h"
-#include "helpers.h"
+#include "subscriptions.h"
 #include "commands.h"
-#include "geo.h"
-#include "fake_sensors.h"
+// #include "fake_sensors.h"
 
 /* Uncomment below line to include debug output */
 #define DEBUG_PRINTS
@@ -66,13 +66,13 @@
 #endif
 
 // node's position
-static pos_t own_pos;
+pos_t own_pos;
 
 // processes
 PROCESS(broadcast_process, "Broadcast process");
 PROCESS(multihop_process, "Multihop process");
 PROCESS(boot_process, "Boot process");
-AUTOSTART_PROCESSES(&boot_process);
+// AUTOSTART_PROCESSES(&boot_process);
 
 // events
 process_event_t broadcast_subscription_event;
@@ -82,43 +82,21 @@ process_event_t unsubscribe_event;
 process_event_t geoware_reading_event;
 /*---------------------------------------------------------------------------*/
 
-/* This structure holds information about neighbors. */
-struct neighbor {
-  /* The ->next pointer is needed since we are placing these
-     on a Contiki list. */
-  struct neighbor *next;
-
-  /* The ->addr field holds the Rime address of the neighbor. */
-  rimeaddr_t addr;
-
-  /* The ->pos field holds the location of the neighbor [0] and his 
-     neighbors rest */
-  pos_t pos[MAX_NEIGHBOR_NEIGHBORS+1];
-
-  /* The -> neighbors holds the number of neighbor neighbors that we 
-     currently store */
-  uint8_t neighbors;
-
-  /* The ->timestamp contains the last time we heard from 
-     this neighbour */
-  uint32_t timestamp;
-
-  /* The ->ctimer is used to remove old neighbors */
-  struct ctimer ctimer;
-};
-
 /* This MEMB() definition defines a memory pool from which we allocate
    neighbor entries. */
 MEMB(neighbors_memb, struct neighbor, MAX_NEIGHBORS);
 
 /* The neighbors_list is a Contiki list that holds the neighbors we
    have seen thus far. */
-LIST(neighbors_list);
+// LIST(neighbors_list);
+// equivalent of LIST(neighbors_list) but not static
+void *LIST_CONCAT(neighbors_list,_list) = NULL;
+list_t neighbors_list = (list_t)&LIST_CONCAT(neighbors_list,_list);
 
 /*
  * This function prints the neighbor list.
  */
-static void
+void
 print_neighbors() {
   struct neighbor *n;
 
@@ -147,204 +125,6 @@ remove_neighbor(void *n)
 
 /*---------------------------------------------------------------------------*/
 
-/* This structure holds information about sensor readings. */
-struct reading {
-  /* The ->next pointer is needed since we are placing these
-     on a Contiki list. */
-  struct reading *next;
-
-  /* type of the sensor / reading */
-  sensor_t type;
-
-  /* The ->value field (union) holds the actual reading value */
-  reading_val value;
-};
-
-/* This MEMB() definition defines a memory pool from which we allocate
-   neighbor entries. */
-MEMB(readings_memb, struct reading, MAX_READINGS);
-
-/* The readings_list is a Contiki list that holds past sensor readings. */
-LIST(readings_list);
-
-/* This structure holds information about sensor readings. */
-struct subscription {
-  /* The ->next pointer is needed since we are placing these
-     on a Contiki list. */
-  struct subscription *next;
-
-  /* -> sub holds the subscription information */
-  subscription_t sub;
-};
-
-/* This MEMB() definition defines a memory pool from which we allocate
-   subscription entries. */
-MEMB(subscriptions_memb, struct subscription, MAX_ACTIVE_SUBSCRIPTIONS);
-
-/* The active_subscriptions is a Contiki list that holds what it says. */
-LIST(active_subscriptions);
-
-/* Check if we already subscribed to sID. */
-uint8_t
-is_subscribed(sid_t sID) {
-  struct subscription *s;
-
-  for(s = list_head(active_subscriptions); s != NULL; s = list_item_next(s)) {
-    /* We break out of the loop if the sID in quesiton matches current
-       subscription. */
-    if(sID == s->sub.subscription_hdr.sID) {
-      break;
-    }
-  }
-
-  return s != NULL;
-}
-
-subscription_t*
-add_subscription(subscription_t *sub) {
-  struct subscription *new_sub;
-
-  new_sub = memb_alloc(&subscriptions_memb);
-
-  /* If we could not allocate a new neighbor entry, we give up. We
-     could have reused an old neighbor entry, but we do not do this
-     for now. */
-  if(new_sub == NULL) {
-    debug_printf("Subscription list full\n");
-    return NULL;
-  }
-
-  /* Initialize the fields. */
-  new_sub->sub = *sub;
-
-  /* Place the subscription on the active_subscriptions list. */
-  list_add(active_subscriptions, new_sub);
-
-  debug_printf("subscription added: %u\n", new_sub->sub.subscription_hdr.sID);
-
-  return &new_sub->sub;
-}
-
-subscription_t*
-get_subscription(sid_t sID) {
-  struct subscription *s;
-  for(s = list_head(active_subscriptions); s != NULL; s = list_item_next(s)) {
-    /* We break out of the loop if the sID in quesiton matches current
-       subscription. */
-    if(sID == s->sub.subscription_hdr.sID) {
-      return &s->sub;
-    }
-  }
-
-  return NULL;
-}
-
-static sid_t
-remove_subscription(sid_t sID)
-{
-  struct subscription *s;
-
-  for(s = list_head(active_subscriptions); s != NULL; s = list_item_next(s)) {
-    /* We break out of the loop if the sID in quesiton matches current
-       subscription. */
-    if(sID == s->sub.subscription_hdr.sID) {
-      break;
-    }
-  }
-
-  if(s != NULL) {
-    printf("removing subscription %u\n", sID);
-
-    list_remove(active_subscriptions, s);
-    memb_free(&subscriptions_memb, s);
-
-    return sID;
-  }
-  
-  printf("wasn't subscribed: %u\n", sID);
-  return 0;
-}
-
-void
-process_subscription(subscription_t *subscription) {
-  // check if we are in the region of interest
-  if (distance(own_pos, subscription->center) > subscription->radius) {
-    return;
-  }
-
-  // check if we are already subscribed
-  if(!is_subscribed(subscription->subscription_hdr.sID)) {
-    // TODO: check if we support the sensor type
-
-    // add the subscription
-    // TODO: what if we dont support the given sensor type?
-    subscription_t *new_sub = add_subscription(subscription);
-
-    // rebroadcast
-    // TODO: only if we havent previously requested
-    // TODO: what if we didnt have enough space to add new subscription but 
-    // would like to forward?
-    // posting synchronously to avoid having to copy buffers
-    if(new_sub != NULL) {
-      process_post_synch(&broadcast_process, broadcast_subscription_event, \
-        NULL);
-        // (void*) new_sub);
-    }
-  }
-}
-
-void
-process_unsubscription(unsubscription_pkt_t *unsubscription_pkt) {
-  static sid_t to_remove;
-
-  // check if we are in the region of interest
-  if (distance(own_pos, unsubscription_pkt->center) > unsubscription_pkt->radius) {
-    return;
-  }
-
-  if(is_subscribed(unsubscription_pkt->sID)) {
-    to_remove = unsubscription_pkt->sID;
-
-    /* Remove the subscription */
-    remove_subscription(to_remove);
-
-    process_post_synch(&broadcast_process, broadcast_unsubscription_event, \
-      NULL);
-      // (void*) to_remove);
-  }
-}
-
-
-static uint8_t
-prepare_unsub_pkt(unsubscription_pkt_t *unsubscription_pkt, sid_t sID) {
-  subscription_t *sub = get_subscription(sID);
-
-  if(sub != NULL) {
-    unsubscription_pkt->hdr.ver = GEOWARE_VERSION;
-    unsubscription_pkt->hdr.type = GEOWARE_UNSUBSCRIPTION;
-    unsubscription_pkt->hdr.len = 0;
-    unsubscription_pkt->sID = sub->subscription_hdr.sID;
-    unsubscription_pkt->center = sub->center;
-    unsubscription_pkt->radius = sub->radius;
-  }
-
-  return sub != NULL;
-}
-
-void
-print_subscription(subscription_t *sub) {
-  printf("sID: %u\n", sub->subscription_hdr.sID);
-  printf("owner pos: ");
-  print_pos(sub->subscription_hdr.owner_pos);
-  printf("type: %u\n", sub->type);
-  printf("period: %lu\n", sub->period);
-  printf("center: ");
-  print_pos(sub->center);
-  printf("radius: "PRINTFLOAT"\n", (long)sub->radius, decimals(sub->radius));
-}
-
-/*---------------------------------------------------------------------------*/
-
 // MEMB(sensors_memb, struct sensor, MAX_SENSORS);
 // equivalent of MEMB, but not static to be able to access from application
 char CC_CONCAT(sensors_memb,_memb_count)[MAX_SENSORS];
@@ -369,26 +149,35 @@ static void
 broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
 {
   struct neighbor *n;
-  geoware_hdr_t *broadcast_hdr;
-  broadcast_pkt_t *broadcast_pkt;
-  subscription_pkt_t *subscription_pkt;
-  unsubscription_pkt_t *unsubscription_pkt;
+  geoware_hdr_t broadcast_hdr;
+  broadcast_pkt_t broadcast_pkt;
+  static subscription_pkt_t subscription_pkt;
+  static unsubscription_pkt_t unsubscription_pkt;
   uint8_t i;
+
+  // printf("received broadcast\n");
 
   /* The packetbuf_dataptr() returns a pointer to the first data byte
      in the received packet. */
-  broadcast_hdr = packetbuf_dataptr();
+  // broadcast_hdr = packetbuf_dataptr();
   
-  // printf("bcast r: %d, %d, %d\n", broadcast_hdr->ver, \
-  // 	broadcast_hdr->type, broadcast_hdr->len );
+  // copying to avoid unalignment issues
+  memcpy(&broadcast_hdr, packetbuf_dataptr(), sizeof(geoware_hdr_t));
 
-  if(broadcast_hdr->ver != GEOWARE_VERSION) {
+  // printf("bcast r: %d, %d, %d\n", broadcast_hdr->ver, \
+  //   broadcast_hdr->type, broadcast_hdr->len );
+
+  // printf("ver: %d, type: %d, len: %d\n", broadcast_hdr.ver, \
+  //   broadcast_hdr.type, broadcast_hdr.len );
+
+  if(broadcast_hdr.ver != GEOWARE_VERSION) {
   	return;
   }
 
-  if(broadcast_hdr->type == GEOWARE_BROADCAST_LOC) {
+  if(broadcast_hdr.type == GEOWARE_BROADCAST_LOC) {
   	// we know a broadcast packet was received so cast to it to use the fields
-  	broadcast_pkt = (broadcast_pkt_t*) broadcast_hdr;
+  	// broadcast_pkt = (broadcast_pkt_t*) broadcast_hdr;
+    memcpy(&broadcast_pkt, packetbuf_dataptr(), sizeof(broadcast_pkt_t));
   	
     /* Check if we already know this neighbor. */
     for(n = list_head(neighbors_list); n != NULL; n = list_item_next(n)) {
@@ -427,7 +216,8 @@ broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
     ctimer_set(&n->ctimer, NEIGHBOR_TIMEOUT * CLOCK_SECOND, remove_neighbor, n);
 
   	// set number of neighbor's neighbors positions that we received
-  	n->neighbors = broadcast_hdr->len;
+  	// n->neighbors = broadcast_hdr->len;
+    n->neighbors = broadcast_hdr.len;
 
   	// sanity check
   	if (n->neighbors > MAX_NEIGHBOR_NEIGHBORS) {
@@ -436,22 +226,26 @@ broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
 
   	// set neighbor's and its neighbors positions
   	for(i=0; i<= n->neighbors; i++) {
-  	  n->pos[i] = broadcast_pkt->pos[i];
+  	  n->pos[i] = broadcast_pkt.pos[i];
   	}
 
   	// debug_printf("updated neighbor: %d.%d, ", n->addr.u8[0], n->addr.u8[1]);
   	// print_pos(n->pos[0]);
   }
 
-  else if (broadcast_hdr->type == GEOWARE_SUBSCRIPTION) {
-    subscription_pkt = (subscription_pkt_t*) broadcast_hdr;
+  else if (broadcast_hdr.type == GEOWARE_SUBSCRIPTION) {
+    // subscription_pkt = (subscription_pkt_t*) broadcast_hdr;
+    memcpy(&subscription_pkt, packetbuf_dataptr(), sizeof(subscription_pkt_t));
 
-    process_subscription(&subscription_pkt->subscription);
+    // process_subscription(&subscription_pkt->subscription);
+    process_subscription(&subscription_pkt.subscription);
   }
-  else if (broadcast_hdr->type == GEOWARE_UNSUBSCRIPTION) {
-    unsubscription_pkt = (unsubscription_pkt_t*) broadcast_hdr;
+  else if (broadcast_hdr.type == GEOWARE_UNSUBSCRIPTION) {
+    // unsubscription_pkt = (unsubscription_pkt_t*) broadcast_hdr;
+    memcpy(&unsubscription_pkt, packetbuf_dataptr(), sizeof(unsubscription_pkt_t));
 
-    process_unsubscription(unsubscription_pkt);
+    // process_unsubscription(unsubscription_pkt);
+    process_unsubscription(&unsubscription_pkt);
   }
 
 }
@@ -472,10 +266,7 @@ PROCESS_THREAD(broadcast_process, ev, data)
 
   static struct etimer et;
   static broadcast_pkt_t broadcast_pkt;
-  static subscription_pkt_t subscription_pkt;
-  static unsubscription_pkt_t unsubscription_pkt;
   struct neighbor *n;
-  uint8_t i;
 
   broadcast_subscription_event = process_alloc_event();
   broadcast_unsubscription_event = process_alloc_event();
@@ -611,9 +402,9 @@ forward(struct multihop_conn *c,
      in the received packet. */
   multihop_hdr = packetbuf_dataptr();
 
-  debug_printf("%d.%d: dest - %d.%d\n", \
-    rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1], \
-    dest->u8[0], dest->u8[1]);
+  // debug_printf("%d.%d: dest - %d.%d\n", \
+  //   rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1], \
+  //   dest->u8[0], dest->u8[1]);
 
   if(multihop_hdr->ver != GEOWARE_VERSION || list_length(neighbors_list)==0 \
       || rimeaddr_cmp(&rimeaddr_node_addr, dest)) {
@@ -796,12 +587,12 @@ PROCESS_THREAD(multihop_process, ev, data)
       multihop_send(&multihop, &to);
     }
     else if (ev == unsubscribe_event) {
-      sid_t *sID = (sid_t*) data;
+      sid_t sID = *(sid_t*) data;
 
-      prepare_unsub_pkt(&unsubscription_pkt, *sID);
+      prepare_unsub_pkt(&unsubscription_pkt, sID);
 
       /* Remove the subscription */
-      remove_subscription(*sID);
+      remove_subscription(sID);
 
       /* Copy the unsubscription packet to the packet buffer. */
       packetbuf_copyfrom(&unsubscription_pkt, sizeof(unsubscription_pkt_t));
@@ -816,7 +607,7 @@ PROCESS_THREAD(multihop_process, ev, data)
 
 /*---------------------------------------------------------------------------*/
 
-uint16_t subscribe(sensor_t type, uint32_t period, \
+sid_t subscribe(sensor_t type, uint32_t period, \
     uint8_t aggr_type, uint8_t aggr_num, pos_t center, \
     float radius) {
 
@@ -847,7 +638,10 @@ uint16_t subscribe(sensor_t type, uint32_t period, \
   }
 }
 void unsubscribe(sid_t sID) {
-  process_post(&multihop_process, unsubscribe_event, (void*) sID);
+  static sid_t id;
+  id = sID;
+
+  process_post(&multihop_process, unsubscribe_event, (void*) &id);
   // removal from active subscriptions is handled in the multihop process since
   // it cant be done until the subsctiption info is copied to the packet
 }
@@ -858,7 +652,7 @@ void publish(uint16_t sID) {
 }
 
 void geoware_init() {
-  process_start(&broadcast_process, NULL);
+  process_start(&boot_process, NULL);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -882,8 +676,8 @@ PROCESS_THREAD(boot_process, ev, data)
   pos_t origin;
   float d = distance(own_pos, origin);
   printf("Distance from origin: "PRINTFLOAT"\n", (long)d, decimals(d));
-  printf("size of subscription: %d\n", sizeof(subscription_t));
-  printf("size of broadcast_pkt_t: %d\n", sizeof(broadcast_pkt_t));
+  // printf("size of subscription: %d\n", sizeof(subscription_t));
+  // printf("size of broadcast_pkt_t: %d\n", sizeof(broadcast_pkt_t));
   
 
   // init shell
@@ -894,10 +688,8 @@ PROCESS_THREAD(boot_process, ev, data)
   memb_init(&neighbors_memb);
   /* Initialize the list used for the neighbor table. */
   list_init(neighbors_list);
-  /* Initialize the memory for the reading entries. */
-  memb_init(&readings_memb);
-  /* Initialize the list used for the sensor readings. */
-  list_init(readings_list);
+
+  subscriptions_init();
   /* initialize sensors TODO: could skip this function and write as above */
   // start broadcast process
   process_start(&broadcast_process, NULL);
@@ -907,6 +699,8 @@ PROCESS_THREAD(boot_process, ev, data)
   printf("%d.%d: Booting completed.\n", \
   	rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1]);
 
+
+  printf("CLOCK_SECOND: %lu\n", CLOCK_SECOND);
 
   // int i;
   // for(i=0; i<1000; i++) {

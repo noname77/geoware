@@ -13,13 +13,13 @@
 /* Defines how often (in seconds) a brodcast packet will be sent
  * (with a jitter of half of that time).
  */
-#define BROADCAST_PERIOD 			10
+#define BROADCAST_PERIOD 			30
 /* Defines the maximum number of neighbors we can remember. */
 #define MAX_NEIGHBORS				16
 /* Defines the maximum number of active subscriptions we can hold. */
 #define MAX_ACTIVE_SUBSCRIPTIONS	6
 /* How long (in seconds) before a neighbor becomes stale */
-#define NEIGHBOR_TIMEOUT			30
+#define NEIGHBOR_TIMEOUT			60
 /* How many 2nd degree neighbors will be reported in the broadcast */
 #define MAX_NEIGHBOR_NEIGHBORS		8
 

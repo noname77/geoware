@@ -1,11 +1,14 @@
 #ifndef GEOWARE_H
 #define GEOWARE_H
 
+#include "lib/list.h"
+#include "lib/memb.h"
+#include "net/rime.h"
+
 #include <stdint.h>
 
 #include "geo.h"
-#include "lib/list.h"
-#include "lib/memb.h"
+#include "helpers.h"
 
 #define GEOWARE_VERSION 1
 
@@ -25,6 +28,8 @@
 enum reading_types { UINT8, UINT16, FLOAT };
 typedef uint8_t reading_t;
 typedef uint8_t sensor_t;
+typedef uint16_t sid_t;
+
 
 enum {
 	GEOWARE_RESERVED = 0,
@@ -46,40 +51,6 @@ typedef struct {
 	pos_t pos[MAX_NEIGHBOR_NEIGHBORS+1];
 } broadcast_pkt_t;
 
-
-typedef uint16_t sid_t;
-typedef struct {
-  sid_t sID;
-  pos_t owner_pos;
-} subscription_hdr_t;
-
-typedef struct {
-  subscription_hdr_t subscription_hdr;
-  sensor_t type;
-  uint32_t period; //in units of ms
-  uint8_t aggr_type;
-  uint8_t aggr_num;
-  pos_t center;
-  float radius;
-} subscription_t;
-
-typedef struct {
-  geoware_hdr_t hdr;
-  subscription_t subscription;
-} subscription_pkt_t;
-
-typedef struct {
-  geoware_hdr_t hdr;
-  sid_t sID;
-  pos_t center;
-  float radius;
-} unsubscription_pkt_t;
-
-typedef struct {
-  geoware_hdr_t hdr;
-  subscription_hdr_t subscription_hdr;
-} reading_hdr_t;
-
 typedef struct {
   sid_t* sIDs;
 } sid_discovery_t;
@@ -91,22 +62,53 @@ typedef struct {
   void (*read)();
 } mapping_t;
 
-typedef union {
-  uint8_t ui8;
-  uint16_t ui16;
-  float fl;
-} reading_val;
-
-extern process_event_t geoware_reading_event;
-
 struct sensor {
   struct sensor *next;
   mapping_t *mapping;
 };
 
+/* This structure holds information about neighbors. */
+struct neighbor {
+  /* The ->next pointer is needed since we are placing these
+     on a Contiki list. */
+  struct neighbor *next;
+
+  /* The ->addr field holds the Rime address of the neighbor. */
+  rimeaddr_t addr;
+
+  /* The ->pos field holds the location of the neighbor [0] and his 
+     neighbors rest */
+  pos_t pos[MAX_NEIGHBOR_NEIGHBORS+1];
+
+  /* The -> neighbors holds the number of neighbor neighbors that we 
+     currently store */
+  uint8_t neighbors;
+
+  /* The ->timestamp contains the last time we heard from 
+     this neighbour */
+  uint32_t timestamp;
+
+  /* The ->ctimer is used to remove old neighbors */
+  struct ctimer ctimer;
+};
+
 // extern void *LIST_CONCAT(sensors_list,_list);
 extern list_t sensors_list;
 extern struct memb sensors_memb;
+
+extern list_t neighbors_list;
+
+extern process_event_t geoware_reading_event;
+extern pos_t own_pos;
+
+extern process_event_t broadcast_subscription_event;
+extern process_event_t broadcast_unsubscription_event;
+// process_event_t subscribe_event;
+// process_event_t unsubscribe_event;
+// process_event_t geoware_reading_event;
+
+PROCESS_NAME(broadcast_process);
+PROCESS_NAME(multihop_process);
 
 sid_t subscribe(sensor_t type, uint32_t period, \
     uint8_t aggr_type, uint8_t aggr_num, pos_t center, \
@@ -116,5 +118,7 @@ void publish(sid_t sID);
 
 void geoware_init();
 void sensors_init();
+
+void print_neighbors();
 
 #endif

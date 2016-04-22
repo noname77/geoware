@@ -4,12 +4,11 @@ LDFLAGS += -v
 CFLAGS += -DPROJECT_CONF_H=\"project-conf.h\"
 
 
-CONTIKI_PROJECT = geoware
+CONTIKI_PROJECT = geoware_app
 
-PROJECT_SOURCEFILES = helpers.c commands.c geo.c fake_sensors.c
-PROJECT_SOURCEFILES += app.c
+PROJECT_SOURCEFILES = fake_sensors.c
 
-APPS = serial-shell
+APPS = geoware
 
 all: $(CONTIKI_PROJECT)
 

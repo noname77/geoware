@@ -1,7 +1,8 @@
 #include "contiki.h"
+#include "net/rime.h"
+
 #include "geoware.h"
 #include "fake_sensors.h"
-
 
 SENSOR_CREATE(TEMPERATURE, "temperature", FLOAT, get_temperature);
 SENSOR_CREATE(LIGHT, "light", UINT16, get_light);
@@ -16,6 +17,7 @@ PROCESS_THREAD(app_process, ev, data)
 {
   PROCESS_BEGIN();
 
+	static struct etimer et;
   static sid_t id;
 
   sensors_init();
@@ -24,22 +26,31 @@ PROCESS_THREAD(app_process, ev, data)
   sensor_init(LIGHT);
   sensor_init(HUMIDITY);
 
+  geoware_init();
+
+  printf("app started\n");
+
+  // wait for 15 seconds to let the network settle
+  etimer_set(&et, CLOCK_SECOND * 60);
+
+  PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
   // start the subscription if we are the sink
   if(rimeaddr_node_addr.u8[0] == 1) {
 	  pos_t center = {20.0, 20.0};
 	  float radius = 11;
 
 	  id = subscribe(HUMIDITY, 2000, 0, 0, center, radius);
+
+	  printf("subscribed to %u\n", id);
   }
 
   while(1) {
   	PROCESS_WAIT_EVENT();
 
-  	if(event == geoware_reading_event) {
+  	if(ev == geoware_reading_event) {
   		printf("received reading\n");
   	}
 	}
-  // geoware_init();
 
   PROCESS_END();
 }
