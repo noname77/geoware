@@ -4,21 +4,26 @@
 #include <stdint.h>
 
 #include "geo.h"
+#include "lib/list.h"
+#include "lib/memb.h"
 
 #define GEOWARE_VERSION 1
 
 // info: the sensor types have to be declared in the same order on all nodes
 // otherwise the __COUNTER__ will result in different values for the same
 // sensor
-#define CREATE_SENSOR(name, strname, type, func)    \
-  static uint8_t name = __COUNTER__; \
-  mapping_t sensor_##name = {strname, name, type, (void (*)())func};
+#define SENSOR_CREATE(name, strname, type, func)    \
+  const uint8_t name = __COUNTER__/2; \
+  mapping_t sensor_##name = {__COUNTER__/2, strname, type , (void (*)())func};
   // TODO: add to sensors list
+
+#define sensor_init(name) \
+  list_add(sensors_list, memb_alloc(&sensors_memb)); \
+  ((struct sensor*)list_tail(sensors_list))->mapping = &sensor_##name;
+
 
 enum reading_types { UINT8, UINT16, FLOAT };
 typedef uint8_t reading_t;
-
-enum sensor_types { TEMPERATURE, LIGHT, HUMIDITY };
 typedef uint8_t sensor_t;
 
 enum {
@@ -92,10 +97,24 @@ typedef union {
   float fl;
 } reading_val;
 
+extern process_event_t geoware_reading_event;
+
+struct sensor {
+  struct sensor *next;
+  mapping_t *mapping;
+};
+
+// extern void *LIST_CONCAT(sensors_list,_list);
+extern list_t sensors_list;
+extern struct memb sensors_memb;
+
 sid_t subscribe(sensor_t type, uint32_t period, \
     uint8_t aggr_type, uint8_t aggr_num, pos_t center, \
     float radius);
 void unsubscribe(sid_t sID);
 void publish(sid_t sID);
+
+void geoware_init();
+void sensors_init();
 
 #endif

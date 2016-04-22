@@ -26,4 +26,8 @@
 /* Maximum number of readings we can store and use with aggregate functions */
 #define MAX_READINGS				30
 
+/* maximum number of sensors geoware will support, used to allocate memory
+   for the sensor mappings */
+#define MAX_SENSORS					5
+
 #endif /* PROJECT_H_ */

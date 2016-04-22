@@ -79,7 +79,7 @@ process_event_t broadcast_subscription_event;
 process_event_t broadcast_unsubscription_event;
 process_event_t subscribe_event;
 process_event_t unsubscribe_event;
-
+process_event_t geoware_reading_event;
 /*---------------------------------------------------------------------------*/
 
 /* This structure holds information about neighbors. */
@@ -265,7 +265,8 @@ remove_subscription(sid_t sID)
   return 0;
 }
 
-void process_subscription(subscription_t *subscription) {
+void
+process_subscription(subscription_t *subscription) {
   // check if we are in the region of interest
   if (distance(own_pos, subscription->center) > subscription->radius) {
     return;
@@ -276,20 +277,24 @@ void process_subscription(subscription_t *subscription) {
     // TODO: check if we support the sensor type
 
     // add the subscription
+    // TODO: what if we dont support the given sensor type?
     subscription_t *new_sub = add_subscription(subscription);
 
     // rebroadcast
     // TODO: only if we havent previously requested
     // TODO: what if we didnt have enough space to add new subscription but 
-    // would like to worward?
+    // would like to forward?
+    // posting synchronously to avoid having to copy buffers
     if(new_sub != NULL) {
-      process_post(&broadcast_process, broadcast_subscription_event, \
-        (void*) new_sub);
+      process_post_synch(&broadcast_process, broadcast_subscription_event, \
+        NULL);
+        // (void*) new_sub);
     }
   }
 }
 
-void process_unsubscription(unsubscription_pkt_t *unsubscription_pkt) {
+void
+process_unsubscription(unsubscription_pkt_t *unsubscription_pkt) {
   static sid_t to_remove;
 
   // check if we are in the region of interest
@@ -300,12 +305,18 @@ void process_unsubscription(unsubscription_pkt_t *unsubscription_pkt) {
   if(is_subscribed(unsubscription_pkt->sID)) {
     to_remove = unsubscription_pkt->sID;
 
-    process_post(&broadcast_process, broadcast_unsubscription_event, \
-      (void*) to_remove);
+    /* Remove the subscription */
+    remove_subscription(to_remove);
+
+    process_post_synch(&broadcast_process, broadcast_unsubscription_event, \
+      NULL);
+      // (void*) to_remove);
   }
 }
 
-uint8_t prepare_unsub_pkt(unsubscription_pkt_t *unsubscription_pkt, sid_t sID) {
+
+static uint8_t
+prepare_unsub_pkt(unsubscription_pkt_t *unsubscription_pkt, sid_t sID) {
   subscription_t *sub = get_subscription(sID);
 
   if(sub != NULL) {
@@ -319,6 +330,38 @@ uint8_t prepare_unsub_pkt(unsubscription_pkt_t *unsubscription_pkt, sid_t sID) {
 
   return sub != NULL;
 }
+
+void
+print_subscription(subscription_t *sub) {
+  printf("sID: %u\n", sub->subscription_hdr.sID);
+  printf("owner pos: ");
+  print_pos(sub->subscription_hdr.owner_pos);
+  printf("type: %u\n", sub->type);
+  printf("period: %lu\n", sub->period);
+  printf("center: ");
+  print_pos(sub->center);
+  printf("radius: "PRINTFLOAT"\n", (long)sub->radius, decimals(sub->radius));
+}
+
+/*---------------------------------------------------------------------------*/
+
+// MEMB(sensors_memb, struct sensor, MAX_SENSORS);
+// equivalent of MEMB, but not static to be able to access from application
+char CC_CONCAT(sensors_memb,_memb_count)[MAX_SENSORS];
+struct sensor CC_CONCAT(sensors_memb,_memb_mem)[MAX_SENSORS];
+struct memb sensors_memb = {sizeof(struct sensor), MAX_SENSORS, \
+                          CC_CONCAT(sensors_memb,_memb_count), \
+                          (void *)CC_CONCAT(sensors_memb,_memb_mem)};
+
+// equivalent of LIST(sensors_list) but not static
+void *LIST_CONCAT(sensors_list,_list) = NULL;
+list_t sensors_list = (list_t)&LIST_CONCAT(sensors_list,_list);
+
+void sensors_init() {
+  memb_init(&sensors_memb);
+  list_init(sensors_list);
+}
+
 
 /*---------------------------------------------------------------------------*/
 /* This function is called whenever a broadcast message is received. */
@@ -336,8 +379,8 @@ broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
      in the received packet. */
   broadcast_hdr = packetbuf_dataptr();
   
-  printf("bcast r: %d, %d, %d\n", broadcast_hdr->ver, \
-  	broadcast_hdr->type, broadcast_hdr->len );
+  // printf("bcast r: %d, %d, %d\n", broadcast_hdr->ver, \
+  // 	broadcast_hdr->type, broadcast_hdr->len );
 
   if(broadcast_hdr->ver != GEOWARE_VERSION) {
   	return;
@@ -396,8 +439,8 @@ broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
   	  n->pos[i] = broadcast_pkt->pos[i];
   	}
 
-  	debug_printf("updated neighbor: %d.%d, ", n->addr.u8[0], n->addr.u8[1]);
-  	print_pos(n->pos[0]);
+  	// debug_printf("updated neighbor: %d.%d, ", n->addr.u8[0], n->addr.u8[1]);
+  	// print_pos(n->pos[0]);
   }
 
   else if (broadcast_hdr->type == GEOWARE_SUBSCRIPTION) {
@@ -467,11 +510,11 @@ PROCESS_THREAD(broadcast_process, ev, data)
         }
       }
 
-      debug_printf("bcast s: %d, %d, %d\n", broadcast_pkt.hdr.ver, \
-        broadcast_pkt.hdr.type, broadcast_pkt.hdr.len );
+      // debug_printf("bcast s: %d, %d, %d\n", broadcast_pkt.hdr.ver, \
+      //   broadcast_pkt.hdr.type, broadcast_pkt.hdr.len );
 
       /* log the time of the broadcast */
-      debug_printf("[BC] @%lu\n", clock_seconds());
+      // debug_printf("[BC] @%lu\n", clock_seconds());
 
       packetbuf_copyfrom(&broadcast_pkt, \
         sizeof(geoware_hdr_t)+(1+broadcast_pkt.hdr.len)*sizeof(pos_t));
@@ -484,30 +527,13 @@ PROCESS_THREAD(broadcast_process, ev, data)
         (BROADCAST_PERIOD/2 + random_rand()%(BROADCAST_PERIOD+1)));
     }
 
-    if (ev == broadcast_subscription_event) {
+    if (ev == broadcast_subscription_event || ev == broadcast_unsubscription_event) {
       // TODO: add jitter
-      debug_printf("broadcasting subscription\n");
-      subscription_pkt.hdr.ver = GEOWARE_VERSION;
-      subscription_pkt.hdr.type = GEOWARE_SUBSCRIPTION;
-      subscription_pkt.hdr.len = 0;
-      subscription_pkt.subscription = *(subscription_t*) data;
+      debug_printf("rebroadcasting un/subscription\n");
 
-      /* Copy the subscription to the packet buffer. */
-      packetbuf_copyfrom(&subscription_pkt, sizeof(subscription_pkt_t));
-
-      broadcast_send(&broadcast);
-    }
-    else if (ev == broadcast_unsubscription_event) {
-      // TODO: add jitter
-      sid_t *sID = (sid_t*) data;
-
-      prepare_unsub_pkt(&unsubscription_pkt, sID);
-
-      /* Remove the subscription */
-      remove_subscription(sID);
-
-      /* Copy the subscription to the packet buffer. */
-      packetbuf_copyfrom(&unsubscription_pkt, sizeof(unsubscription_pkt_t));
+      /* need to clear any previous (multihop) attributes to be able to send
+         broadcast */
+      packetbuf_attr_clear();
 
       broadcast_send(&broadcast);
     }
@@ -542,6 +568,8 @@ recv(struct multihop_conn *c, const rimeaddr_t *sender,
     subscription_pkt = (subscription_pkt_t*) multihop_hdr;
     
     debug_printf("subscription packet received.\n");
+
+    // print_subscription(&subscription_pkt->subscription);
 
     process_subscription(&subscription_pkt->subscription);
   }
@@ -582,11 +610,6 @@ forward(struct multihop_conn *c,
   /* The packetbuf_dataptr() returns a pointer to the first data byte
      in the received packet. */
   multihop_hdr = packetbuf_dataptr();
-  
- //  printf("multihop r: %d, %d, %d\n", multihop_hdr->ver, \
- //  	multihop_hdr->type, multihop_hdr->len );
- //  printf("prevhop: %d.%d\n", prevhop->u8[0], prevhop->u8[1]);
-	// print_neighbors();
 
   debug_printf("%d.%d: dest - %d.%d\n", \
     rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1], \
@@ -625,6 +648,7 @@ forward(struct multihop_conn *c,
 			continue;
 		}
 
+    // find the distance to the center of interest for current neighbor
   	float tmp_dist = distance(n->pos[0], *destination);
 		
 		// printf("%d.%d: ", n->addr.u8[0], n->addr.u8[1]);
@@ -774,10 +798,10 @@ PROCESS_THREAD(multihop_process, ev, data)
     else if (ev == unsubscribe_event) {
       sid_t *sID = (sid_t*) data;
 
-      prepare_unsub_pkt(&unsubscription_pkt, sID);
+      prepare_unsub_pkt(&unsubscription_pkt, *sID);
 
       /* Remove the subscription */
-      remove_subscription(sID);
+      remove_subscription(*sID);
 
       /* Copy the unsubscription packet to the packet buffer. */
       packetbuf_copyfrom(&unsubscription_pkt, sizeof(unsubscription_pkt_t));
@@ -811,6 +835,8 @@ uint16_t subscribe(sensor_t type, uint32_t period, \
   // TODO: add to the active subscriptions list
   if ((active_sub = add_subscription(&new_sub)) != NULL) {
 
+    print_subscription(active_sub);
+
     // send out the news
     process_post(&multihop_process, subscribe_event, (void*) active_sub);
 
@@ -831,13 +857,17 @@ void publish(uint16_t sID) {
 
 }
 
-
+void geoware_init() {
+  process_start(&broadcast_process, NULL);
+}
 
 /*---------------------------------------------------------------------------*/
 PROCESS_THREAD(boot_process, ev, data)
 {
   PROCESS_BEGIN();
   
+  geoware_reading_event = process_alloc_event();
+
   // get the node coordinates from cooja, found at:
   // https://sourceforge.net/p/contiki/mailman/message/34696644/
   printf("Waiting for node coordinates from Cooja..\n");
@@ -868,6 +898,7 @@ PROCESS_THREAD(boot_process, ev, data)
   memb_init(&readings_memb);
   /* Initialize the list used for the sensor readings. */
   list_init(readings_list);
+  /* initialize sensors TODO: could skip this function and write as above */
   // start broadcast process
   process_start(&broadcast_process, NULL);
   // start runicast process
@@ -875,6 +906,7 @@ PROCESS_THREAD(boot_process, ev, data)
 
   printf("%d.%d: Booting completed.\n", \
   	rimeaddr_node_addr.u8[0], rimeaddr_node_addr.u8[1]);
+
 
   // int i;
   // for(i=0; i<1000; i++) {
