@@ -7,8 +7,12 @@
 
 #define GEOWARE_VERSION 1
 
-#define SENSOR(name, type)    \
-  mapping_t sensor_##name = {name, type}
+// info: the sensor types have to be declared in the same order on all nodes
+// otherwise the __COUNTER__ will result in different values for the same
+// sensor
+#define CREATE_SENSOR(name, strname, type, func)    \
+  static uint8_t name = __COUNTER__; \
+  mapping_t sensor_##name = {strname, name, type, (void (*)())func};
   // TODO: add to sensors list
 
 enum reading_types { UINT8, UINT16, FLOAT };
@@ -20,7 +24,6 @@ typedef uint8_t sensor_t;
 enum {
 	GEOWARE_RESERVED = 0,
 	GEOWARE_BROADCAST_LOC,
-  GEOWARE_BROADCAST_SUB,
   GEOWARE_SUBSCRIPTION,
   GEOWARE_UNSUBSCRIPTION,
 	GEOWARE_SID_DISCOVERY,
@@ -63,7 +66,6 @@ typedef struct {
 typedef struct {
   geoware_hdr_t hdr;
   sid_t sID;
-  sensor_t type; // in case two subscriptions end up with the same sID
   pos_t center;
   float radius;
 } unsubscription_pkt_t;
@@ -79,7 +81,9 @@ typedef struct {
 
 typedef struct {
   sensor_t s;
+  const char* strname;
   reading_t r;
+  void (*read)();
 } mapping_t;
 
 typedef union {
