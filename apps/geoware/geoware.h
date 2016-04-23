@@ -24,6 +24,7 @@
   list_add(sensors_list, memb_alloc(&sensors_memb)); \
   ((struct sensor*)list_tail(sensors_list))->mapping = &sensor_##name;
 
+#define HAS_MORE_READINGS(reading) ((reading).value.fl != FLT_MAX)
 
 enum reading_types { UINT8, UINT16, FLOAT };
 typedef uint8_t reading_t;
@@ -44,11 +45,12 @@ typedef struct {
   uint8_t ver  : 2;		/**< Protocol version. */
   uint8_t type : 3;		/**< Packet type. */
   uint8_t len  : 3;
+  pos_t pos;
 } geoware_hdr_t;
 
 typedef struct {
 	geoware_hdr_t hdr;
-	pos_t pos[MAX_NEIGHBOR_NEIGHBORS+1];
+	pos_t npos[MAX_NEIGHBOR_NEIGHBORS];
 } broadcast_pkt_t;
 
 typedef struct {
@@ -92,6 +94,17 @@ struct neighbor {
   struct ctimer ctimer;
 };
 
+typedef union {
+  uint8_t ui8;
+  uint16_t ui16;
+  float fl;
+} reading_val;
+
+typedef struct {
+  rimeaddr_t owner;
+  reading_val value;
+} reading_owned;
+
 // extern void *LIST_CONCAT(sensors_list,_list);
 extern list_t sensors_list;
 extern struct memb sensors_memb;
@@ -120,5 +133,6 @@ void geoware_init();
 void sensors_init();
 
 void print_neighbors();
+reading_owned get_reading_sid(sid_t sID);
 
 #endif

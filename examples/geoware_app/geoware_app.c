@@ -1,6 +1,9 @@
 #include "contiki.h"
 #include "net/rime.h"
 
+#include <stdio.h>  /* For printf() */
+#include <float.h>  /* for FLT_MAX */
+
 #include "geoware.h"
 #include "fake_sensors.h"
 
@@ -20,17 +23,20 @@ PROCESS_THREAD(app_process, ev, data)
 	static struct etimer et;
   static sid_t id;
 
+  // initializes the sensors list
   sensors_init();
 
+  // initialize the sensors (adds them to a list)
   sensor_init(TEMPERATURE);
   sensor_init(LIGHT);
   sensor_init(HUMIDITY);
 
+  // starts the middleware process
   geoware_init();
 
   printf("app started\n");
 
-  // wait for 15 seconds to let the network settle
+  // wait for 1 minute to let the network settle
   etimer_set(&et, CLOCK_SECOND * 60);
 
   PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
@@ -39,16 +45,31 @@ PROCESS_THREAD(app_process, ev, data)
 	  pos_t center = {20.0, 20.0};
 	  float radius = 11;
 
-	  // id = subscribe(HUMIDITY, 5000, 0, 0, center, radius);
-
-	  // printf("subscribed to %u\n", id);
+    id = subscribe(HUMIDITY, 5000, 0, 0, center, radius);
+    printf("subscribed to %u\n", id);
   }
 
   while(1) {
   	PROCESS_WAIT_EVENT();
 
   	if(ev == geoware_reading_event) {
-  		printf("received reading\n");
+      if (data == NULL){
+        continue;
+      }
+
+      sid_t sID = *((sid_t*)data);
+
+      // check if the subscription matches what we are interested in
+      if(sID == id) {
+        reading_owned new_value;
+        int i = 0;
+        // read all the readings present in the list for given sid
+        while(HAS_MORE_READINGS(new_value = get_reading_sid(sID))) {
+          printf("%d: received reading from: %d.%d sID: %u value: %u\n", \
+           i++, new_value.owner.u8[0], new_value.owner.u8[1],\
+           sID, new_value.value.ui8);
+        }
+      }
   	}
 	}
 

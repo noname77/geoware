@@ -7,7 +7,7 @@
 #include "subscriptions.h"
 
 /* Uncomment below line to include debug output */
-#define DEBUG_PRINTS
+// #define DEBUG_PRINTS
 
 #ifdef DEBUG_PRINTS
 #define debug_printf printf
@@ -23,6 +23,13 @@ struct reading {
 
   /* type of the sensor / reading */
   sensor_t type;
+
+  /* subscription id, used only on gatway 
+     TODO: do i need type if i use sID instead on sensing nodes? */
+  sid_t sID;
+
+  /* the node which collected this reading, used only on gateway */
+  rimeaddr_t owner;
 
   /* The ->value field (union) holds the actual reading value */
   reading_val value;
@@ -51,7 +58,7 @@ get_mapping(sensor_t type) {
 }
 
 static void
-remove_reading(sensor_t t) {
+remove_reading_type(sensor_t t) {
   struct reading *r;
 
   for(r = list_head(readings_list); r != NULL; r = list_item_next(r)) {
@@ -63,13 +70,13 @@ remove_reading(sensor_t t) {
   }
 
   if(r != NULL) {
-    printf("removing old %s reading\n", get_mapping(t)->strname);
+    debug_printf("removing old %s reading\n", get_mapping(t)->strname);
 
     list_remove(readings_list, r);
     memb_free(&readings_memb, r);
   }
   else {
-    printf("no old %s readings\n", get_mapping(t)->strname);
+    debug_printf("no old %s readings\n", get_mapping(t)->strname);
   }
 }
 
@@ -100,14 +107,13 @@ sensor_read(void *s)
   /* allocate space for the new reading */
   new_reading = memb_alloc(&readings_memb);
 
-  /* If we could not allocate a new neighbor entry, we give up. We
-     could have reused an old neighbor entry, but we do not do this
-     for now. */
+  /* If we could not allocate a new reading entry, remove
+     an old entry of the same type and try again */
   if(new_reading == NULL) {
     debug_printf("Readings list full\n");
 
     //remove oldest entry of same type
-    remove_reading(mapping->s);
+    remove_reading_type(mapping->s);
     
     // allocate space again
     new_reading = memb_alloc(&readings_memb);
@@ -149,7 +155,7 @@ sensor_read(void *s)
 }
 
 reading_val
-get_reading(sensor_t t) {
+get_reading_type(sensor_t t) {
   struct reading *r;
   reading_val value;
 
@@ -163,14 +169,108 @@ get_reading(sensor_t t) {
   }
 
   if(r != NULL) {
-    printf("removing old %s reading\n", get_mapping(t)->strname);
+    debug_printf("removing old %s reading\n", get_mapping(t)->strname);
 
     list_remove(readings_list, r);
     memb_free(&readings_memb, r);
   }
   else {
-    printf("no old %s readings\n", get_mapping(t)->strname);
+    debug_printf("no old %s readings\n", get_mapping(t)->strname);
     value.fl = FLT_MAX;
+  }
+
+  return value;
+}
+
+static void
+remove_reading_sid(sid_t sID)
+{
+  struct reading *r;
+
+  for(r = list_head(readings_list); r != NULL; r = list_item_next(r)) {
+    /* We break out of the loop if the sensor type in quesiton matches current
+       readings type. */
+    if(sID == r->sID) {
+      break;
+    }
+  }
+
+  if(r != NULL) {
+    debug_printf("removing old reading for sID: %u\n", sID);
+
+    list_remove(readings_list, r);
+    memb_free(&readings_memb, r);
+  }
+  else {
+    debug_printf("no old readings with sID: %u\n", sID);
+  }
+}
+
+uint8_t
+reading_add(sid_t sID, rimeaddr_t* owner, reading_val* value) {
+  struct reading *new_reading;
+
+  /* allocate space for the new reading */
+  new_reading = memb_alloc(&readings_memb);
+
+  /* If we could not allocate a new reading entry, remove
+     an old entry of the same type and try again */
+  if(new_reading == NULL) {
+    debug_printf("Readings list full\n");
+
+    //remove oldest entry of same sID?
+    remove_reading_sid(sID);
+    
+    // allocate space again
+    new_reading = memb_alloc(&readings_memb);
+
+    if (new_reading == NULL) {
+      // give up the second time
+      return 0;
+    }
+  }
+
+  /* Initialize the type field. */
+  new_reading->type = get_subscription(sID)->type;
+
+  new_reading->sID = sID;
+
+  new_reading->owner = *owner;
+
+  // add the new reading to the reading list
+  new_reading->value = *value;
+
+  /* Place the new reading on the readings list. */
+  list_add(readings_list, new_reading);
+
+  return 1;
+}
+
+reading_owned
+get_reading_sid(sid_t sID)
+{
+  struct reading *r;
+  reading_owned value;
+
+  for(r = list_head(readings_list); r != NULL; r = list_item_next(r)) {
+    /* We break out of the loop if the sensor type in quesiton matches current
+       readings type. */
+    if(sID == r->sID) {
+      value.value = r->value;
+      value.owner = r->owner;
+      break;
+    }
+  }
+
+  if(r != NULL) {
+    // debug_printf("removing old reading of sID: %u\n", sID);
+
+    list_remove(readings_list, r);
+    memb_free(&readings_memb, r);
+  }
+  else {
+    debug_printf("no old readings of sID: %u\n", sID);
+    value.value.fl = FLT_MAX;
   }
 
   return value;
@@ -303,6 +403,11 @@ add_subscription(subscription_t *sub) {
   if(distance(sub->subscription_hdr.owner_pos, own_pos) != 0) {
     ctimer_set(&new_sub->callback, new_sub->sub.period * CLOCK_SECOND / 1000, sensor_read, (void*) new_sub);
   }
+  else {
+    /* otherwise set the process that called us to be able to send the
+       received readings back to it */
+    new_sub->proc = PROCESS_CURRENT();
+  }
 
   /* Place the subscription on the active_subscriptions list. */
   list_add(active_subscriptions, new_sub);
@@ -325,6 +430,21 @@ get_subscription(sid_t sID) {
 
   return NULL;
 }
+
+struct subscription*
+get_subscription_struct(sid_t sID)
+{
+  struct subscription *s;
+  for(s = list_head(active_subscriptions); s != NULL; s = list_item_next(s)) {
+    /* We break out of the loop if the sID in quesiton matches current
+       subscription. */
+    if(sID == s->sub.subscription_hdr.sID) {
+      return s;
+    }
+  }
+
+  return NULL; 
+};
 
 sid_t
 remove_subscription(sid_t sID)
@@ -438,6 +558,7 @@ prepare_unsub_pkt(unsubscription_pkt_t *unsub_pkt, sid_t sID) {
     unsub_pkt->hdr.ver = GEOWARE_VERSION;
     unsub_pkt->hdr.type = GEOWARE_UNSUBSCRIPTION;
     unsub_pkt->hdr.len = 0;
+    unsub_pkt->hdr.pos = own_pos;
     unsub_pkt->sID = sub->subscription_hdr.sID;
     unsub_pkt->center = sub->center;
     unsub_pkt->radius = sub->radius;

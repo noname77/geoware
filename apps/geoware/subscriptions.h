@@ -30,6 +30,8 @@ struct subscription {
   /* -> callback is a ctimer that gets fired according to the subscription
      and reads the specified sensor type */
   struct ctimer callback;
+
+  struct process *proc;
 };
 
 typedef struct {
@@ -49,12 +51,6 @@ typedef struct {
   subscription_hdr_t subscription_hdr;
 } reading_hdr_t;
 
-typedef union {
-  uint8_t ui8;
-  uint16_t ui16;
-  float fl;
-} reading_val;
-
 typedef struct {
 	reading_hdr_t reading_hdr;
 	reading_val value;
@@ -67,6 +63,7 @@ uint8_t was_seen(sid_t sID);
 uint8_t is_subscribed(sid_t sID);
 subscription_t* add_subscription(subscription_t *sub);
 subscription_t* get_subscription(sid_t sID);
+struct subscription* get_subscription_struct(sid_t sID);
 sid_t remove_subscription(sid_t sID);
 void process_subscription(subscription_pkt_t *sub_pkt);
 void process_unsubscription(unsubscription_pkt_t *unsub_pkt);
@@ -74,6 +71,7 @@ uint8_t prepare_unsub_pkt(unsubscription_pkt_t *unsub_pkt, sid_t sID);
 void print_subscription(subscription_t *sub);
 void print_unsubscription(unsubscription_pkt_t *unsub_pkt);
 void subscriptions_init();
-reading_val get_reading(sensor_t t);
+reading_val get_reading_type(sensor_t t);
+uint8_t reading_add(sid_t sID, rimeaddr_t* owner, reading_val* value);
 
 #endif

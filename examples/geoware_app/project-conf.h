@@ -19,7 +19,7 @@
 /* Defines the maximum number of active subscriptions we can hold. */
 #define MAX_ACTIVE_SUBSCRIPTIONS	6
 /* How long (in seconds) before a neighbor becomes stale */
-#define NEIGHBOR_TIMEOUT			60
+#define NEIGHBOR_TIMEOUT			2*BROADCAST_PERIOD
 /* How many 2nd degree neighbors will be reported in the broadcast */
 #define MAX_NEIGHBOR_NEIGHBORS		8
 
