@@ -39,9 +39,9 @@ PROCESS_THREAD(app_process, ev, data)
 	  pos_t center = {20.0, 20.0};
 	  float radius = 11;
 
-	  id = subscribe(HUMIDITY, 2000, 0, 0, center, radius);
+	  // id = subscribe(HUMIDITY, 5000, 0, 0, center, radius);
 
-	  printf("subscribed to %u\n", id);
+	  // printf("subscribed to %u\n", id);
   }
 
   while(1) {

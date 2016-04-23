@@ -30,4 +30,6 @@
    for the sensor mappings */
 #define MAX_SENSORS					5
 
+#define BOOTSTRAP_TIME				60
+
 #endif /* PROJECT_H_ */

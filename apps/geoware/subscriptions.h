@@ -55,6 +55,10 @@ typedef union {
   float fl;
 } reading_val;
 
+typedef struct {
+	reading_hdr_t reading_hdr;
+	reading_val value;
+} reading_pkt_t;
 
 
 sid_t add_seen_sub(sid_t sID);
@@ -64,10 +68,12 @@ uint8_t is_subscribed(sid_t sID);
 subscription_t* add_subscription(subscription_t *sub);
 subscription_t* get_subscription(sid_t sID);
 sid_t remove_subscription(sid_t sID);
-void process_subscription(subscription_t *subscription);
-void process_unsubscription(unsubscription_pkt_t *unsubscription_pkt);
-uint8_t prepare_unsub_pkt(unsubscription_pkt_t *unsubscription_pkt, sid_t sID);
+void process_subscription(subscription_pkt_t *sub_pkt);
+void process_unsubscription(unsubscription_pkt_t *unsub_pkt);
+uint8_t prepare_unsub_pkt(unsubscription_pkt_t *unsub_pkt, sid_t sID);
 void print_subscription(subscription_t *sub);
+void print_unsubscription(unsubscription_pkt_t *unsub_pkt);
 void subscriptions_init();
+reading_val get_reading(sensor_t t);
 
 #endif

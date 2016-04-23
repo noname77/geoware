@@ -1,6 +1,7 @@
 #include "contiki.h"
 
 #include <stdio.h> /* For printf() */
+#include <float.h>  /* for FLT_MAX */
 
 #include "geoware.h"
 #include "subscriptions.h"
@@ -35,13 +36,13 @@ MEMB(readings_memb, struct reading, MAX_READINGS);
 LIST(readings_list);
 
 
-mapping_t*
-get_mapping(subscription_t *sub) {
+static mapping_t*
+get_mapping(sensor_t type) {
   struct sensor *s;
   for(s = list_head(sensors_list); s != NULL; s = list_item_next(s)) {
     /* We break out of the loop if the sID in quesiton matches current
        subscription. */
-    if(s->mapping->s == sub->type) {
+    if(s->mapping->s == type) {
       return s->mapping;
     }
   }
@@ -50,14 +51,38 @@ get_mapping(subscription_t *sub) {
 }
 
 static void
-sensor_read(void *s) {
+remove_reading(sensor_t t) {
+  struct reading *r;
+
+  for(r = list_head(readings_list); r != NULL; r = list_item_next(r)) {
+    /* We break out of the loop if the sensor type in quesiton matches current
+       readings type. */
+    if(t == r->type) {
+      break;
+    }
+  }
+
+  if(r != NULL) {
+    printf("removing old %s reading\n", get_mapping(t)->strname);
+
+    list_remove(readings_list, r);
+    memb_free(&readings_memb, r);
+  }
+  else {
+    printf("no old %s readings\n", get_mapping(t)->strname);
+  }
+}
+
+static void
+sensor_read(void *s)
+{
   struct subscription *sub;
   struct reading *new_reading;
   mapping_t *mapping;
   reading_val value;
 
   sub = (struct subscription*) s;
-  mapping = get_mapping(&sub->sub);
+  mapping = get_mapping(sub->sub.type);
 
   if(mapping == NULL) {
     printf("sensor not registered.\n");
@@ -81,8 +106,16 @@ sensor_read(void *s) {
   if(new_reading == NULL) {
     debug_printf("Readings list full\n");
 
-    // TODO: remove oldest entry of same type
-    return;
+    //remove oldest entry of same type
+    remove_reading(mapping->s);
+    
+    // allocate space again
+    new_reading = memb_alloc(&readings_memb);
+
+    if (new_reading == NULL) {
+      // give up the second time
+      return;
+    }
   }
 
   /* Initialize the type field. */
@@ -110,9 +143,38 @@ sensor_read(void *s) {
 
   /* Place the new reading on the readings list. */
   list_add(readings_list, new_reading);
+
+  // TODO: add aggregate checking here
+  publish(sub->sub.subscription_hdr.sID);
 }
 
+reading_val
+get_reading(sensor_t t) {
+  struct reading *r;
+  reading_val value;
 
+  for(r = list_head(readings_list); r != NULL; r = list_item_next(r)) {
+    /* We break out of the loop if the sensor type in quesiton matches current
+       readings type. */
+    if(t == r->type) {
+      value = r->value;
+      break;
+    }
+  }
+
+  if(r != NULL) {
+    printf("removing old %s reading\n", get_mapping(t)->strname);
+
+    list_remove(readings_list, r);
+    memb_free(&readings_memb, r);
+  }
+  else {
+    printf("no old %s readings\n", get_mapping(t)->strname);
+    value.fl = FLT_MAX;
+  }
+
+  return value;
+}
 
 /* This structure holds information about seen but not active subscriptions. */
 struct seen_sub {
@@ -132,7 +194,8 @@ MEMB(seen_subs_memb, struct seen_sub, MAX_ACTIVE_SUBSCRIPTIONS);
 LIST(seen_subs);
 
 sid_t
-add_seen_sub(sid_t sID) {
+add_seen_sub(sid_t sID)
+{
   struct seen_sub *new_sub;
 
   new_sub = memb_alloc(&seen_subs_memb);
@@ -291,8 +354,10 @@ remove_subscription(sid_t sID)
 }
 
 void
-process_subscription(subscription_t *subscription) {
+process_subscription(subscription_pkt_t *sub_pkt) {
   struct neighbor *n;
+
+  subscription_t *subscription = &sub_pkt->subscription;
 
   // check if we are already subscribed or already seen this subscription
   if(is_subscribed(subscription->subscription_hdr.sID) || \
@@ -340,21 +405,24 @@ process_subscription(subscription_t *subscription) {
 }
 
 void
-process_unsubscription(unsubscription_pkt_t *unsubscription_pkt) {
+process_unsubscription(unsubscription_pkt_t *unsub_pkt) {
   // check if we are in the region of interest
   // if (distance(own_pos, unsubscription_pkt->center) > unsubscription_pkt->radius) {
   //   return;
   // }
 
-  if(is_subscribed(unsubscription_pkt->sID)) {
+  // printf("processing unsubscription:\n");
+  // print_unsubscription(unsub_pkt);
+
+  if(is_subscribed(unsub_pkt->sID)) {
     /* Remove the subscription */
-    remove_subscription(unsubscription_pkt->sID);
+    remove_subscription(unsub_pkt->sID);
 
     process_post_synch(&broadcast_process, broadcast_unsubscription_event, \
       NULL);
   }
-  else if(was_seen(unsubscription_pkt->sID)) {
-    remove_seen_sub(unsubscription_pkt->sID);
+  else if(was_seen(unsub_pkt->sID)) {
+    remove_seen_sub(unsub_pkt->sID);
 
     process_post_synch(&broadcast_process, broadcast_unsubscription_event, \
       NULL);
@@ -363,16 +431,16 @@ process_unsubscription(unsubscription_pkt_t *unsubscription_pkt) {
 
 
 uint8_t
-prepare_unsub_pkt(unsubscription_pkt_t *unsubscription_pkt, sid_t sID) {
+prepare_unsub_pkt(unsubscription_pkt_t *unsub_pkt, sid_t sID) {
   subscription_t *sub = get_subscription(sID);
 
   if(sub != NULL) {
-    unsubscription_pkt->hdr.ver = GEOWARE_VERSION;
-    unsubscription_pkt->hdr.type = GEOWARE_UNSUBSCRIPTION;
-    unsubscription_pkt->hdr.len = 0;
-    unsubscription_pkt->sID = sub->subscription_hdr.sID;
-    unsubscription_pkt->center = sub->center;
-    unsubscription_pkt->radius = sub->radius;
+    unsub_pkt->hdr.ver = GEOWARE_VERSION;
+    unsub_pkt->hdr.type = GEOWARE_UNSUBSCRIPTION;
+    unsub_pkt->hdr.len = 0;
+    unsub_pkt->sID = sub->subscription_hdr.sID;
+    unsub_pkt->center = sub->center;
+    unsub_pkt->radius = sub->radius;
   }
 
   return sub != NULL;
@@ -388,6 +456,14 @@ print_subscription(subscription_t *sub) {
   printf("center: ");
   print_pos(sub->center);
   printf("radius: "PRINTFLOAT"\n", (long)sub->radius, decimals(sub->radius));
+}
+
+void
+print_unsubscription(unsubscription_pkt_t *unsub_pkt) {
+  printf("sID: %u\n", unsub_pkt->sID);
+  printf("center: ");
+  print_pos(unsub_pkt->center);
+  printf("radius: "PRINTFLOAT"\n", (long)unsub_pkt->radius, decimals(unsub_pkt->radius));
 }
 
 void

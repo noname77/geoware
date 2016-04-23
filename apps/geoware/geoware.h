@@ -16,9 +16,9 @@
 // otherwise the __COUNTER__ will result in different values for the same
 // sensor
 #define SENSOR_CREATE(name, strname, type, func)    \
-  const uint8_t name = __COUNTER__/2; \
-  mapping_t sensor_##name = {__COUNTER__/2, strname, type , (void (*)())func};
-  // TODO: add to sensors list
+  const uint8_t name = __COUNTER__/2 + 1; \
+  mapping_t sensor_##name = {__COUNTER__/2 + 1, strname, type , \
+    (void (*)())func};
 
 #define sensor_init(name) \
   list_add(sensors_list, memb_alloc(&sensors_memb)); \

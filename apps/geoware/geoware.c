@@ -68,6 +68,11 @@
 // node's position
 pos_t own_pos;
 
+// was trying to use pointers and avoid coppying buffers but i got defeated
+// hold just one last packet and copy it from and to the buffer
+static subscription_pkt_t subscription_pkt;
+static unsubscription_pkt_t unsubscription_pkt;
+
 // processes
 PROCESS(broadcast_process, "Broadcast process");
 PROCESS(multihop_process, "Multihop process");
@@ -79,6 +84,7 @@ process_event_t broadcast_subscription_event;
 process_event_t broadcast_unsubscription_event;
 process_event_t subscribe_event;
 process_event_t unsubscribe_event;
+process_event_t publish_event;
 process_event_t geoware_reading_event;
 /*---------------------------------------------------------------------------*/
 
@@ -151,11 +157,11 @@ broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
   struct neighbor *n;
   geoware_hdr_t broadcast_hdr;
   broadcast_pkt_t broadcast_pkt;
-  static subscription_pkt_t subscription_pkt;
-  static unsubscription_pkt_t unsubscription_pkt;
+  // static subscription_pkt_t subscription_pkt;
+  // static unsubscription_pkt_t unsubscription_pkt;
   uint8_t i;
 
-  // printf("received broadcast\n");
+  // printf("received broadcast from: %d.%d\n", from->u8[0], from->u8[1]);
 
   /* The packetbuf_dataptr() returns a pointer to the first data byte
      in the received packet. */
@@ -213,7 +219,8 @@ broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
     n->timestamp = clock_seconds();
 
     /* update the expiration timer */
-    ctimer_set(&n->ctimer, NEIGHBOR_TIMEOUT * CLOCK_SECOND, remove_neighbor, n);
+    uint16_t timeout = clock_seconds() < BOOTSTRAP_TIME ? NEIGHBOR_TIMEOUT : 100*NEIGHBOR_TIMEOUT;
+    ctimer_set(&n->ctimer, timeout * CLOCK_SECOND, remove_neighbor, n);
 
   	// set number of neighbor's neighbors positions that we received
   	// n->neighbors = broadcast_hdr->len;
@@ -238,7 +245,7 @@ broadcast_recv(struct broadcast_conn *c, const rimeaddr_t *from)
     memcpy(&subscription_pkt, packetbuf_dataptr(), sizeof(subscription_pkt_t));
 
     // process_subscription(&subscription_pkt->subscription);
-    process_subscription(&subscription_pkt.subscription);
+    process_subscription(&subscription_pkt);
   }
   else if (broadcast_hdr.type == GEOWARE_UNSUBSCRIPTION) {
     // unsubscription_pkt = (unsubscription_pkt_t*) broadcast_hdr;
@@ -273,13 +280,12 @@ PROCESS_THREAD(broadcast_process, ev, data)
 
   broadcast_open(&broadcast, BROADCAST_CHANNEL, &broadcast_call);
 
-  /* Send a broadcast every BROADCAST_PERIOD with a jitter of half of 
-     BROADCAST_PERIOD */
-  etimer_set(&et, \
-    CLOCK_SECOND * \
-    (BROADCAST_PERIOD/2 + random_rand()%(BROADCAST_PERIOD+1)));
-
   while(1) {
+    uint16_t period = clock_seconds() < BOOTSTRAP_TIME ? BROADCAST_PERIOD : 10*BROADCAST_PERIOD;
+    
+    /* Send a broadcast every BROADCAST_PERIOD with a jitter of half of 
+       BROADCAST_PERIOD */
+    etimer_set(&et, CLOCK_SECOND*period/2 + random_rand()%(period+period*CLOCK_SECOND));
 
     PROCESS_WAIT_EVENT();
 
@@ -311,20 +317,48 @@ PROCESS_THREAD(broadcast_process, ev, data)
         sizeof(geoware_hdr_t)+(1+broadcast_pkt.hdr.len)*sizeof(pos_t));
 
       broadcast_send(&broadcast);
-
-      /* need to set it again here, couldnt think of a better solution.. */
-      etimer_set(&et, \
-        CLOCK_SECOND * \
-        (BROADCAST_PERIOD/2 + random_rand()%(BROADCAST_PERIOD+1)));
     }
 
-    if (ev == broadcast_subscription_event || ev == broadcast_unsubscription_event) {
-      // TODO: add jitter
-      debug_printf("rebroadcasting un/subscription\n");
+    if (ev == broadcast_subscription_event) {
+      // sanity check
+      // if(data == NULL) {
+      //   continue;
+      // }
+
+      debug_printf("rebroadcasting subscription\n");
+      // print_subscription(&subscription_pkt.subscription);
+
+      // TODO: make this dependent on the number of neighbors
+      etimer_set(&et, CLOCK_SECOND/2 + random_rand()%(CLOCK_SECOND*2));
+
+      PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
 
       /* need to clear any previous (multihop) attributes to be able to send
          broadcast */
-      packetbuf_attr_clear();
+      // packetbuf_attr_clear();
+      packetbuf_copyfrom(&subscription_pkt, sizeof(subscription_pkt_t));
+
+      broadcast_send(&broadcast);
+    }
+    else if (ev == broadcast_unsubscription_event) {
+      // // sanity check
+      // if(data == NULL) {
+      //   continue;
+      // }
+
+      debug_printf("rebroadcasting unsubscription\n");
+      // TODO: this prints garbage, wtfff?
+      // print_subscription((subscription_pkt_t*)data);
+
+      // print_unsubscription(&unsubscription_pkt);
+
+      // TODO: make this dependent on the number of neighbors
+      etimer_set(&et, CLOCK_SECOND/2 + random_rand()%CLOCK_SECOND);
+
+      PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+
+      /* Copy the reading to the packet buffer. */
+      packetbuf_copyfrom(&unsubscription_pkt, sizeof(unsubscription_pkt_t));
 
       broadcast_send(&broadcast);
     }
@@ -343,8 +377,8 @@ recv(struct multihop_conn *c, const rimeaddr_t *sender,
      uint8_t hops)
 {
   geoware_hdr_t *multihop_hdr;
-  subscription_pkt_t *subscription_pkt;
-  unsubscription_pkt_t *unsubscription_pkt;
+  // static subscription_pkt_t subscription_pkt;
+  // static unsubscription_pkt_t unsubscription_pkt;
 
   printf("multihop message received. originator: %d.%d hops: %d\n", \
   	sender->u8[0], sender->u8[1], hops);
@@ -355,21 +389,26 @@ recv(struct multihop_conn *c, const rimeaddr_t *sender,
     return;
   }
 
-  if (multihop_hdr->type == GEOWARE_SUBSCRIPTION) {
-    subscription_pkt = (subscription_pkt_t*) multihop_hdr;
-    
+  if(multihop_hdr->type == GEOWARE_SUBSCRIPTION) {
+    // subscription_pkt = (subscription_pkt_t*) multihop_hdr;
+    memcpy(&subscription_pkt, packetbuf_dataptr(), sizeof(subscription_pkt_t));
+
     debug_printf("subscription packet received.\n");
 
     // print_subscription(&subscription_pkt->subscription);
 
-    process_subscription(&subscription_pkt->subscription);
+    process_subscription(&subscription_pkt);
   }
-  else if (multihop_hdr->type == GEOWARE_UNSUBSCRIPTION) {
-    unsubscription_pkt = (unsubscription_pkt_t*) multihop_hdr;
-    
+  else if(multihop_hdr->type == GEOWARE_UNSUBSCRIPTION) {
+    // unsubscription_pkt = (unsubscription_pkt_t*) multihop_hdr;
+    memcpy(&unsubscription_pkt, packetbuf_dataptr(), sizeof(unsubscription_pkt_t));
+
     debug_printf("unsubscription packet received.\n");
 
-    process_unsubscription(unsubscription_pkt);
+    process_unsubscription(&unsubscription_pkt);
+  }
+  else if(multihop_hdr->type == GEOWARE_READING) {
+    debug_printf("reading packet received.\n");
   }
 }
 /*
@@ -390,8 +429,8 @@ forward(struct multihop_conn *c,
   struct neighbor *closest = NULL;
 	geoware_hdr_t *multihop_hdr;
 	reading_hdr_t *reading_hdr;
-  subscription_pkt_t *subscription_pkt;
-  unsubscription_pkt_t *unsubscription_pkt;
+  // subscription_pkt_t *subscription_pkt;
+  // unsubscription_pkt_t *unsubscription_pkt;
   pos_t *destination;
   float proximity = EPSILON;
 	uint8_t i;
@@ -416,14 +455,14 @@ forward(struct multihop_conn *c,
     destination = &reading_hdr->subscription_hdr.owner_pos;
   }
   else if (multihop_hdr->type == GEOWARE_SUBSCRIPTION) {
-    subscription_pkt = (subscription_pkt_t*) multihop_hdr;
-    destination = &subscription_pkt->subscription.center;
-    proximity = subscription_pkt->subscription.radius;
+    subscription_pkt = *((subscription_pkt_t*)multihop_hdr);
+    destination = &subscription_pkt.subscription.center;
+    proximity = subscription_pkt.subscription.radius;
   }
   else if (multihop_hdr->type == GEOWARE_UNSUBSCRIPTION) {
-    unsubscription_pkt = (unsubscription_pkt_t*) multihop_hdr;
-    destination = &unsubscription_pkt->center;
-    proximity = unsubscription_pkt->radius;
+    unsubscription_pkt = *((unsubscription_pkt_t*)multihop_hdr);
+    destination = &unsubscription_pkt.center;
+    proximity = unsubscription_pkt.radius;
   }
 
 	/* Find distance to destination */
@@ -449,12 +488,12 @@ forward(struct multihop_conn *c,
     // if the distance is less than some small value EPSILON it means we
     // found the destination/subscription owner, set it as packet destination
     if(tmp_dist < proximity) {
-      rimeaddr_t ad;
-      rimeaddr_copy(&ad, packetbuf_addr(PACKETBUF_ADDR_ERECEIVER));
-      debug_printf("recipient  b4: %d.%d\n", ad.u8[0], ad.u8[1]);
+      // rimeaddr_t ad;
+      // rimeaddr_copy(&ad, packetbuf_addr(PACKETBUF_ADDR_ERECEIVER));
+      // debug_printf("recipient  b4: %d.%d\n", ad.u8[0], ad.u8[1]);
       packetbuf_set_addr(PACKETBUF_ADDR_ERECEIVER, &n->addr);
-      rimeaddr_copy(&ad, packetbuf_addr(PACKETBUF_ADDR_ERECEIVER));
-      debug_printf("recipient aft: %d.%d\n", ad.u8[0], ad.u8[1]);
+      // rimeaddr_copy(&ad, packetbuf_addr(PACKETBUF_ADDR_ERECEIVER));
+      // debug_printf("recipient aft: %d.%d\n", ad.u8[0], ad.u8[1]);
       closest = n;
       break;
     }
@@ -531,13 +570,14 @@ PROCESS_THREAD(multihop_process, ev, data)
   PROCESS_BEGIN();
 
   static reading_hdr_t reading_hdr;
-  static subscription_pkt_t subscription_pkt;
-  static unsubscription_pkt_t unsubscription_pkt;
+  // static subscription_pkt_t subscription_pkt;
+  // static unsubscription_pkt_t unsubscription_pkt;
   pos_t owner_pos = {0.0, 0.0};
   static rimeaddr_t to;
 
   subscribe_event = process_alloc_event();
   unsubscribe_event = process_alloc_event();
+  publish_event = process_alloc_event();
 
   /* Activate the button sensor. We use the button to drive traffic -
      when the button is pressed, a packet is sent. */
@@ -600,6 +640,17 @@ PROCESS_THREAD(multihop_process, ev, data)
       /* Send the packet. */ 
       multihop_send(&multihop, &to);
     }
+    else if (ev == publish_event) {
+      if(data == NULL) {
+        continue;
+      }
+
+      /* Copy the reading packet to the packet buffer. */
+      packetbuf_copyfrom(data, sizeof(reading_pkt_t));
+
+       /* Send the packet. */ 
+      multihop_send(&multihop, &to);
+    }
   }
 
   PROCESS_END();
@@ -607,7 +658,8 @@ PROCESS_THREAD(multihop_process, ev, data)
 
 /*---------------------------------------------------------------------------*/
 
-sid_t subscribe(sensor_t type, uint32_t period, \
+sid_t
+subscribe(sensor_t type, uint32_t period, \
     uint8_t aggr_type, uint8_t aggr_num, pos_t center, \
     float radius) {
 
@@ -626,7 +678,7 @@ sid_t subscribe(sensor_t type, uint32_t period, \
   // TODO: add to the active subscriptions list
   if ((active_sub = add_subscription(&new_sub)) != NULL) {
 
-    print_subscription(active_sub);
+    // print_subscription(active_sub);
 
     // send out the news
     process_post(&multihop_process, subscribe_event, (void*) active_sub);
@@ -637,7 +689,9 @@ sid_t subscribe(sensor_t type, uint32_t period, \
     return 0;
   }
 }
-void unsubscribe(sid_t sID) {
+
+void
+unsubscribe(sid_t sID) {
   static sid_t id;
   id = sID;
 
@@ -647,8 +701,27 @@ void unsubscribe(sid_t sID) {
 }
 
 // send an updated value to the subscription owner
-void publish(uint16_t sID) {
+void
+publish(sid_t sID) {
+  static reading_pkt_t reading_pkt;
+  subscription_t *s;
 
+  printf("publishing subscription: %u\n", sID);
+
+  s = get_subscription(sID);
+  reading_pkt.value = get_reading(s->type);
+
+  if(reading_pkt.value.fl == FLT_MAX) {
+    return;
+  }
+
+  reading_pkt.reading_hdr.hdr.ver = GEOWARE_VERSION;
+  reading_pkt.reading_hdr.hdr.type = GEOWARE_READING;
+  reading_pkt.reading_hdr.hdr.len = 0;
+  reading_pkt.reading_hdr.subscription_hdr.sID = sID;
+  reading_pkt.reading_hdr.subscription_hdr.owner_pos = s->subscription_hdr.owner_pos;
+  
+  process_post(&multihop_process, publish_event, (void*) &reading_pkt);
 }
 
 void geoware_init() {

@@ -39,7 +39,8 @@ PROCESS_BEGIN();
   pos_t center = {20.0, 20.0};
   float radius = 11;
 
-  id = subscribe(2, 1000, 0, 0, center, radius);
+  id = subscribe(1, 5000, 0, 0, center, radius);
+  // id = subscribe(3, 5000, 0, 0, center, radius);
 
   snprintf(shell_out, sizeof(shell_out), "%u", id);
 
