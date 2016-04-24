@@ -6,10 +6,14 @@
 
 #include "geoware.h"
 #include "fake_sensors.h"
+#include "aggr.h"
 
 SENSOR_CREATE(TEMPERATURE, "temperature", FLOAT, get_temperature);
 SENSOR_CREATE(LIGHT, "light", UINT16, get_light);
 SENSOR_CREATE(HUMIDITY, "humidity", UINT8, get_humidity);
+
+AGGREGATE_CREATE(MAXIMUM, maximum);
+AGGREGATE_CREATE(AVERAGE, average);
 
 
 PROCESS(app_process, "App process");
@@ -31,13 +35,20 @@ PROCESS_THREAD(app_process, ev, data)
   sensor_init(LIGHT);
   sensor_init(HUMIDITY);
 
+  // initializes the aggregate functions list
+  aggregates_init();
+
+  // initialize the aggregate functions (adds them to a list)
+  aggr_init(MAXIMUM);
+  aggr_init(AVERAGE);
+
   // starts the middleware process
   geoware_init();
 
   printf("app started\n");
 
   // wait for 1 minute to let the network settle
-  etimer_set(&et, CLOCK_SECOND * 60);
+  etimer_set(&et, CLOCK_SECOND * 90);
 
   PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
   // start the subscription if we are the sink
@@ -45,7 +56,7 @@ PROCESS_THREAD(app_process, ev, data)
 	  pos_t center = {20.0, 20.0};
 	  float radius = 11;
 
-    id = subscribe(HUMIDITY, 5000, 0, 0, center, radius);
+    id = subscribe(HUMIDITY, 5000, AVERAGE, 10, center, radius);
     printf("subscribed to %u\n", id);
   }
 

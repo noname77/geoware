@@ -1,3 +1,3 @@
-geoware_src = geoware.c helpers.c commands.c geo.c subscriptions.c
+geoware_src = geoware.c helpers.c commands.c geo.c subscriptions.c geoware_sensors.c aggregates.c
 APPS += serial-shell
 include $(CONTIKI)/apps/serial-shell/Makefile.serial-shell

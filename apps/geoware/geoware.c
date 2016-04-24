@@ -52,7 +52,6 @@
 
 /* project includes */
 #include "geoware.h"
-#include "subscriptions.h"
 #include "commands.h"
 // #include "fake_sensors.h"
 
@@ -97,10 +96,7 @@ MEMB(neighbors_memb, struct neighbor, MAX_NEIGHBORS);
 
 /* The neighbors_list is a Contiki list that holds the neighbors we
    have seen thus far. */
-// LIST(neighbors_list);
-// equivalent of LIST(neighbors_list) but not static
-void *LIST_CONCAT(neighbors_list,_list) = NULL;
-list_t neighbors_list = (list_t)&LIST_CONCAT(neighbors_list,_list);
+LIST_GLOBAL(neighbors_list);
 
 /*
  * This function prints the neighbor list.
@@ -173,8 +169,8 @@ add_neighbor(pos_t pos, rimeaddr_t *addr)
   n->timestamp = clock_seconds();
 
   /* update the expiration timer */
-  uint16_t timeout = clock_seconds() < BOOTSTRAP_TIME ? NEIGHBOR_TIMEOUT : 2*NEIGHBOR_TIMEOUT;
-  ctimer_set(&n->ctimer, timeout * CLOCK_SECOND, remove_neighbor, n);
+  // uint16_t timeout = clock_seconds() < BOOTSTRAP_TIME ? NEIGHBOR_TIMEOUT : 2*NEIGHBOR_TIMEOUT;
+  ctimer_set(&n->ctimer, CLOCK_SECOND*NEIGHBOR_TIMEOUT, remove_neighbor, n);
 
   /* set its position */
   n->pos[0] = pos;
@@ -184,22 +180,35 @@ add_neighbor(pos_t pos, rimeaddr_t *addr)
 
 /*---------------------------------------------------------------------------*/
 
-// MEMB(sensors_memb, struct sensor, MAX_SENSORS);
+// MEMB_GLOBAL(sensors_memb, struct sensor, MAX_SENSORS);
 // equivalent of MEMB, but not static to be able to access from application
-char CC_CONCAT(sensors_memb,_memb_count)[MAX_SENSORS];
-struct sensor CC_CONCAT(sensors_memb,_memb_mem)[MAX_SENSORS];
-struct memb sensors_memb = {sizeof(struct sensor), MAX_SENSORS, \
-                          CC_CONCAT(sensors_memb,_memb_count), \
-                          (void *)CC_CONCAT(sensors_memb,_memb_mem)};
+// char CC_CONCAT(sensors_memb,_memb_count)[MAX_SENSORS];
+// struct sensor CC_CONCAT(sensors_memb,_memb_mem)[MAX_SENSORS];
+// struct memb sensors_memb = {sizeof(struct sensor), MAX_SENSORS, \
+//                           CC_CONCAT(sensors_memb,_memb_count), \
+//                           (void *)CC_CONCAT(sensors_memb,_memb_mem)};
 
+// LIST_GLOBAL(sensors_list)
 // equivalent of LIST(sensors_list) but not static
-void *LIST_CONCAT(sensors_list,_list) = NULL;
-list_t sensors_list = (list_t)&LIST_CONCAT(sensors_list,_list);
+// void *LIST_CONCAT(sensors_list,_list) = NULL;
+// list_t sensors_list = (list_t)&LIST_CONCAT(sensors_list,_list);
 
-void sensors_init() {
-  memb_init(&sensors_memb);
-  list_init(sensors_list);
-}
+
+
+
+// MEMB_GLOBAL(aggrs_memb, struct aggregate, MAX_AGGREGATES);
+// char CC_CONCAT(aggrs_memb,_memb_count)[MAX_AGGREGATES];
+// struct aggregate CC_CONCAT(aggrs_memb,_memb_mem)[MAX_AGGREGATES];
+// struct memb aggrs_memb = {sizeof(struct aggregate), MAX_AGGREGATES, \
+//                           CC_CONCAT(aggrs_memb,_memb_count), \
+//                           (void *)CC_CONCAT(aggrs_memb,_memb_mem)};
+
+
+// LIST_GLOBAL(aggregate_list);
+// equivalent of LIST(sensors_list) but not static
+// void *LIST_CONCAT(aggregate_list,_list) = NULL;
+// list_t aggregate_list = (list_t)&LIST_CONCAT(aggregate_list,_list);
+
 
 
 /*---------------------------------------------------------------------------*/
@@ -304,11 +313,12 @@ PROCESS_THREAD(broadcast_process, ev, data)
 
   while(1) {
     PROCESS_WAIT_EVENT();
-    uint16_t period = clock_seconds() < BOOTSTRAP_TIME ? BROADCAST_PERIOD : 2*BROADCAST_PERIOD;
+    // uint16_t period = clock_seconds() < BOOTSTRAP_TIME ? BROADCAST_PERIOD : 2*BROADCAST_PERIOD;
     if(etimer_expired(&et)) {
       /* Send a broadcast every BROADCAST_PERIOD with a jitter of half of 
          BROADCAST_PERIOD */
-      etimer_set(&et, CLOCK_SECOND*period/2 + random_rand()%(period+period*CLOCK_SECOND));
+      // etimer_set(&et, CLOCK_SECOND*period/2 + random_rand()%(period+period*CLOCK_SECOND));
+      etimer_set(&et, CLOCK_SECOND*BROADCAST_PERIOD/2 + random_rand()%((BROADCAST_PERIOD+1)*CLOCK_SECOND));
 
       // printf("broadcasting at %lu\n", clock_seconds());
       // printf("next broadcast at: %lu\n", etimer_expiration_time(&et)/CLOCK_SECOND);
@@ -740,13 +750,13 @@ unsubscribe(sid_t sID) {
 
 // send an updated value to the subscription owner
 void
-publish(sid_t sID) {
+publish(sid_t sID, reading_val value) {
   subscription_t *s;
 
   printf("publishing subscription: %u\n", sID);
 
   s = get_subscription(sID);
-  reading_pkt_out.value = get_reading_type(s->type);
+  reading_pkt_out.value = value;
 
   if(reading_pkt_out.value.fl == FLT_MAX) {
     return;
@@ -762,7 +772,8 @@ publish(sid_t sID) {
   process_post(&multihop_process, publish_event, (void*) &reading_pkt_out);
 }
 
-void geoware_init() {
+void
+geoware_init() {
   process_start(&boot_process, NULL);
 }
 
@@ -800,7 +811,6 @@ PROCESS_THREAD(boot_process, ev, data)
   /* Initialize the list used for the neighbor table. */
   list_init(neighbors_list);
 
-  subscriptions_init();
   /* initialize sensors TODO: could skip this function and write as above */
   // start broadcast process
   process_start(&broadcast_process, NULL);

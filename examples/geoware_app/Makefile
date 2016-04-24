@@ -6,7 +6,7 @@ CFLAGS += -DPROJECT_CONF_H=\"project-conf.h\"
 
 CONTIKI_PROJECT = geoware_app
 
-PROJECT_SOURCEFILES = fake_sensors.c
+PROJECT_SOURCEFILES = fake_sensors.c aggr.c
 
 APPS = geoware
 

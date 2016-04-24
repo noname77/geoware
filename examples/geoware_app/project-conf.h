@@ -30,6 +30,8 @@
    for the sensor mappings */
 #define MAX_SENSORS					5
 
+#define MAX_AGGREGATES				3
+
 #define BOOTSTRAP_TIME				60
 
 #endif /* PROJECT_H_ */
