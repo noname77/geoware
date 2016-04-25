@@ -42,6 +42,7 @@ struct subscription {
   struct process *proc;
 };
 
+extern list_t active_subscriptions;
 
 sid_t add_seen_sub(sid_t sID);
 sid_t remove_seen_sub(sid_t sID);
@@ -52,7 +53,6 @@ subscription_t* get_subscription(sid_t sID);
 struct subscription* get_subscription_struct(sid_t sID);
 sid_t remove_subscription(sid_t sID);
 void print_subscription(subscription_t *sub);
-// void subscriptions_init();
 reading_val get_reading_type(sensor_t t);
 uint8_t reading_add(sid_t sID, rimeaddr_t* owner, reading_val* value);
 

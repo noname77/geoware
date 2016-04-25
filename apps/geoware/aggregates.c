@@ -3,10 +3,15 @@
 MEMB_GLOBAL(aggrs_memb, struct aggregate, MAX_AGGREGATES);
 LIST_GLOBAL(aggregate_list);
 
-void aggregates_init() {
+/*---------------------------------------------------------------------------*/
+
+void
+aggregates_init() {
   memb_init(&aggrs_memb);
   list_init(aggregate_list);
 }
+
+/*---------------------------------------------------------------------------*/
 
 aggr_mapping_t*
 get_aggregate(sid_t sID)
@@ -24,3 +29,5 @@ get_aggregate(sid_t sID)
 
   return NULL;
 }
+
+/*---------------------------------------------------------------------------*/

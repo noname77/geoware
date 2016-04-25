@@ -18,6 +18,8 @@ typedef struct {
   uint8_t ver  : 2;		/**< Protocol version. */
   uint8_t type : 3;		/**< Packet type. */
   uint8_t len  : 3;
+  uint8_t firewrk : 1;
+  uint8_t cost  : 4;
   pos_t pos;
 } geoware_hdr_t;
 
@@ -55,6 +57,7 @@ typedef struct {
 
 void process_subscription(subscription_pkt_t *sub_pkt);
 void process_unsubscription(unsubscription_pkt_t *unsub_pkt);
+uint8_t prepare_sub_pkt(subscription_pkt_t *sub_pkt, sid_t sID);
 uint8_t prepare_unsub_pkt(unsubscription_pkt_t *unsub_pkt, sid_t sID);
 void print_unsubscription(unsubscription_pkt_t *unsub_pkt);
 

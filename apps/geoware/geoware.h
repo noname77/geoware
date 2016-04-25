@@ -64,16 +64,12 @@ extern process_event_t broadcast_unsubscription_event;
 PROCESS_NAME(broadcast_process);
 PROCESS_NAME(multihop_process);
 
+void geoware_init();
 sid_t subscribe(sensor_t type, uint32_t period, \
-    uint8_t aggr_type, uint8_t aggr_num, pos_t center, \
-    float radius);
+                uint8_t aggr_type, uint8_t aggr_num, pos_t center, \
+                float radius);
 void unsubscribe(sid_t sID);
 void publish(sid_t sID, reading_val value);
-
-void geoware_init();
-
-void sensor_new_wrapper(mapping_t* sensor);
-
 void print_neighbors();
 
 

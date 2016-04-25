@@ -9,6 +9,7 @@
 #define debug_printf(format, args...)
 #endif
 
+/*---------------------------------------------------------------------------*/
 /* This structure holds information about sensor readings. */
 struct reading {
   /* The ->next pointer is needed since we are placing these
@@ -29,6 +30,7 @@ struct reading {
   reading_val value;
 };
 
+/*---------------------------------------------------------------------------*/
 /* This MEMB() definition defines a memory pool from which we allocate
    neighbor entries. */
 MEMB(readings_memb, struct reading, MAX_READINGS);
@@ -63,6 +65,8 @@ remove_reading_type(sensor_t t)
     debug_printf("no old %s readings\n", get_mapping(t)->strname);
   }
 }
+
+/*---------------------------------------------------------------------------*/
 
 void
 sensor_read(void *s)
@@ -152,6 +156,8 @@ sensor_read(void *s)
   }
 }
 
+/*---------------------------------------------------------------------------*/
+
 reading_val
 get_reading_type(sensor_t t)
 {
@@ -181,6 +187,8 @@ get_reading_type(sensor_t t)
   return value;
 }
 
+/*---------------------------------------------------------------------------*/
+
 void
 remove_reading_sid(sid_t sID)
 {
@@ -204,6 +212,8 @@ remove_reading_sid(sid_t sID)
     debug_printf("no old readings with sID: %u\n", sID);
   }
 }
+
+/*---------------------------------------------------------------------------*/
 
 uint8_t
 reading_add(sid_t sID, rimeaddr_t* owner, reading_val* value)
@@ -246,6 +256,8 @@ reading_add(sid_t sID, rimeaddr_t* owner, reading_val* value)
   return 1;
 }
 
+/*---------------------------------------------------------------------------*/
+
 reading_owned
 get_reading_sid(sid_t sID)
 {
@@ -276,6 +288,8 @@ get_reading_sid(sid_t sID)
   return value;
 }
 
+/*---------------------------------------------------------------------------*/
+
 mapping_t*
 get_mapping(sensor_t type)
 {
@@ -291,12 +305,16 @@ get_mapping(sensor_t type)
   return NULL;
 }
 
+/*---------------------------------------------------------------------------*/
+
 void
 sensor_add(mapping_t* sensor)
 {
 	list_add(sensors_list, memb_alloc(&sensors_memb));
 	((struct sensor*)list_tail(sensors_list))->mapping = sensor;
 }
+
+/*---------------------------------------------------------------------------*/
 
 void
 sensors_init()
@@ -308,3 +326,5 @@ sensors_init()
   /* Initialize the list used for the sensor readings. */
   list_init(readings_list);
 }
+
+/*---------------------------------------------------------------------------*/

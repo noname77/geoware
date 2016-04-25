@@ -1,7 +1,7 @@
 #ifndef GEO_H
 #define GEO_H
 
-#define EPSILON 0.05
+#define EPSILON 0.1
 
 typedef struct {
   float x;

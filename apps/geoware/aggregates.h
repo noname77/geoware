@@ -12,8 +12,8 @@
   list_add(aggregate_list, memb_alloc(&aggrs_memb)); \
   ((struct aggregate*)list_tail(aggregate_list))->mapping = &aggr_##type;
 
-// sid_t already defined in subscriptions.h but dont know how to make it better
-// without a header just for this..
+/* sid_t already defined in subscriptions.h but dont know how to make it better
+   without a header just for this.. */
 typedef uint16_t sid_t;
 typedef uint8_t aggr_t;
 typedef reading_owned (*aggr_func)(sid_t sID, uint8_t num);
